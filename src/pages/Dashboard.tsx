@@ -5,6 +5,9 @@ import { ApiEndpoint } from "../components/ApiEndpoint";
 import { SetupModal } from "../components/SetupModal";
 import { UsageSummary } from "../components/UsageSummary";
 import { GettingStartedEmptyState } from "../components/EmptyState";
+import { ThemeToggleCompact } from "../components/ThemeToggle";
+import { RequestMonitor } from "../components/RequestMonitor";
+import { HealthIndicator } from "../components/HealthIndicator";
 import { appStore } from "../stores/app";
 import { toastStore } from "../stores/toast";
 import {
@@ -169,6 +172,7 @@ export function DashboardPage() {
             </div>
           </div>
           <div class="flex items-center gap-2 sm:gap-3">
+            <ThemeToggleCompact />
             <StatusIndicator
               running={proxyStatus().running}
               onToggle={toggleProxy}
@@ -225,6 +229,9 @@ export function DashboardPage() {
             running={proxyStatus().running}
           />
 
+          {/* Live Request Monitor */}
+          <RequestMonitor />
+
           {/* Connected accounts - only show when has providers */}
           <Show when={connectedProviders().length > 0}>
             <div>
@@ -243,17 +250,7 @@ export function DashboardPage() {
                       {provider.name}
                     </span>
                     <div class="ml-auto flex items-center gap-2">
-                      <svg
-                        class="w-4 h-4 text-green-600"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          fill-rule="evenodd"
-                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                          clip-rule="evenodd"
-                        />
-                      </svg>
+                      <HealthIndicator provider={provider.provider} />
                       <button
                         class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity"
                         onClick={() => handleDisconnect(provider.provider)}

@@ -134,3 +134,43 @@ export async function showSystemNotification(
     sendNotification({ title, body });
   }
 }
+
+// Request log for live monitoring
+export interface RequestLog {
+  id: string;
+  timestamp: number;
+  provider: string;
+  model: string;
+  method: string;
+  path: string;
+  status: number;
+  durationMs: number;
+  tokensIn?: number;
+  tokensOut?: number;
+}
+
+export async function onRequestLog(
+  callback: (log: RequestLog) => void,
+): Promise<UnlistenFn> {
+  return listen<RequestLog>("request-log", (event) => {
+    callback(event.payload);
+  });
+}
+
+// Provider health check
+export interface HealthStatus {
+  status: "healthy" | "degraded" | "offline" | "unconfigured";
+  latencyMs?: number;
+  lastChecked: number;
+}
+
+export interface ProviderHealth {
+  claude: HealthStatus;
+  openai: HealthStatus;
+  gemini: HealthStatus;
+  qwen: HealthStatus;
+}
+
+export async function checkProviderHealth(): Promise<ProviderHealth> {
+  return invoke("check_provider_health");
+}

@@ -17,6 +17,21 @@ pub struct ProxyStatus {
     pub endpoint: String,
 }
 
+// Request log entry for live monitoring
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestLog {
+    pub id: String,
+    pub timestamp: u64,
+    pub provider: String,
+    pub model: String,
+    pub method: String,
+    pub path: String,
+    pub status: u16,
+    pub duration_ms: u64,
+    pub tokens_in: Option<u32>,
+    pub tokens_out: Option<u32>,
+}
+
 impl Default for ProxyStatus {
     fn default() -> Self {
         Self {
@@ -152,6 +167,93 @@ fn save_auth_to_file(auth: &AuthStatus) -> Result<(), String> {
     std::fs::write(path, data).map_err(|e| e.to_string())
 }
 
+// Parse CLIProxyAPI log output to extract request information
+fn parse_request_log(line: &str, counter: &mut u64) -> Option<RequestLog> {
+    // CLIProxyAPI logs requests in various formats, we'll try to extract useful info
+    // Common patterns: "POST /v1/chat/completions 200 OK 1234ms"
+    // or JSON logs: {"method": "POST", "path": "/v1/...", "status": 200}
+    
+    let line_lower = line.to_lowercase();
+    
+    // Skip non-request lines
+    if !line_lower.contains("/v1/") && !line_lower.contains("chat") && !line_lower.contains("completions") {
+        return None;
+    }
+    
+    // Try to identify the provider from the path
+    let provider = if line.contains("anthropic") || line.contains("claude") {
+        "claude"
+    } else if line.contains("openai") || line.contains("codex") {
+        "openai"
+    } else if line.contains("gemini") {
+        "gemini"
+    } else if line.contains("qwen") {
+        "qwen"
+    } else {
+        "unknown"
+    };
+    
+    // Try to extract HTTP method
+    let method = if line.contains("POST") {
+        "POST"
+    } else if line.contains("GET") {
+        "GET"
+    } else {
+        "POST" // Default for chat completions
+    };
+    
+    // Try to extract status code
+    let status = if line.contains(" 200") || line.contains("200 ") {
+        200
+    } else if line.contains(" 400") || line.contains("400 ") {
+        400
+    } else if line.contains(" 401") || line.contains("401 ") {
+        401
+    } else if line.contains(" 500") || line.contains("500 ") {
+        500
+    } else {
+        200 // Assume success if not specified
+    };
+    
+    // Extract duration if present (look for patterns like "123ms" or "1.23s")
+    let duration_ms = extract_duration(line).unwrap_or(0);
+    
+    *counter += 1;
+    
+    Some(RequestLog {
+        id: format!("req_{}", counter),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+        provider: provider.to_string(),
+        model: "auto".to_string(), // Could extract from request body if available
+        method: method.to_string(),
+        path: "/v1/chat/completions".to_string(),
+        status,
+        duration_ms,
+        tokens_in: None,
+        tokens_out: None,
+    })
+}
+
+// Helper to extract duration from log line
+fn extract_duration(line: &str) -> Option<u64> {
+    // Look for patterns like "123ms", "1.5s", "1500ms"
+    for word in line.split_whitespace() {
+        if word.ends_with("ms") {
+            if let Ok(ms) = word.trim_end_matches("ms").parse::<u64>() {
+                return Some(ms);
+            }
+        } else if word.ends_with('s') && !word.ends_with("ms") {
+            if let Ok(secs) = word.trim_end_matches('s').parse::<f64>() {
+                return Some((secs * 1000.0) as u64);
+            }
+        }
+    }
+    None
+}
+
 // Tauri commands
 #[tauri::command]
 fn get_proxy_status(state: State<AppState>) -> ProxyStatus {
@@ -220,11 +322,19 @@ remote-management:
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         use tauri_plugin_shell::process::CommandEvent;
+        let mut request_counter: u64 = 0;
+        
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
                     let text = String::from_utf8_lossy(&line);
                     println!("[CLIProxyAPI] {}", text);
+                    
+                    // Try to parse request logs from CLIProxyAPI output
+                    // Format varies but typically includes: method, path, status, duration
+                    if let Some(log) = parse_request_log(&text, &mut request_counter) {
+                        let _ = app_handle.emit("request-log", log);
+                    }
                 }
                 CommandEvent::Stderr(line) => {
                     let text = String::from_utf8_lossy(&line);
@@ -526,6 +636,102 @@ fn save_config(state: State<AppState>, config: AppConfig) -> Result<(), String> 
     save_config_to_file(&config)
 }
 
+// Provider health status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderHealth {
+    pub claude: HealthStatus,
+    pub openai: HealthStatus,
+    pub gemini: HealthStatus,
+    pub qwen: HealthStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthStatus {
+    pub status: String,  // "healthy", "degraded", "offline", "unconfigured"
+    pub latency_ms: Option<u64>,
+    pub last_checked: u64,
+}
+
+impl Default for HealthStatus {
+    fn default() -> Self {
+        Self {
+            status: "unconfigured".to_string(),
+            latency_ms: None,
+            last_checked: 0,
+        }
+    }
+}
+
+#[tauri::command]
+async fn check_provider_health(state: State<'_, AppState>) -> Result<ProviderHealth, String> {
+    let config = state.config.lock().unwrap().clone();
+    let auth = state.auth_status.lock().unwrap().clone();
+    let proxy_running = state.proxy_status.lock().unwrap().running;
+    
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    // If proxy isn't running, all providers are offline
+    if !proxy_running {
+        return Ok(ProviderHealth {
+            claude: HealthStatus { status: "offline".to_string(), latency_ms: None, last_checked: timestamp },
+            openai: HealthStatus { status: "offline".to_string(), latency_ms: None, last_checked: timestamp },
+            gemini: HealthStatus { status: "offline".to_string(), latency_ms: None, last_checked: timestamp },
+            qwen: HealthStatus { status: "offline".to_string(), latency_ms: None, last_checked: timestamp },
+        });
+    }
+    
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    
+    let endpoint = format!("http://localhost:{}/v1/models", config.port);
+    
+    // Check proxy health by requesting models endpoint
+    let start = std::time::Instant::now();
+    let response = client.get(&endpoint)
+        .header("Authorization", "Bearer proxypal-local")
+        .send()
+        .await;
+    let latency = start.elapsed().as_millis() as u64;
+    
+    let proxy_healthy = response.map(|r| r.status().is_success()).unwrap_or(false);
+    
+    Ok(ProviderHealth {
+        claude: if auth.claude && proxy_healthy {
+            HealthStatus { status: "healthy".to_string(), latency_ms: Some(latency), last_checked: timestamp }
+        } else if auth.claude {
+            HealthStatus { status: "degraded".to_string(), latency_ms: None, last_checked: timestamp }
+        } else {
+            HealthStatus { status: "unconfigured".to_string(), latency_ms: None, last_checked: timestamp }
+        },
+        openai: if auth.openai && proxy_healthy {
+            HealthStatus { status: "healthy".to_string(), latency_ms: Some(latency), last_checked: timestamp }
+        } else if auth.openai {
+            HealthStatus { status: "degraded".to_string(), latency_ms: None, last_checked: timestamp }
+        } else {
+            HealthStatus { status: "unconfigured".to_string(), latency_ms: None, last_checked: timestamp }
+        },
+        gemini: if auth.gemini && proxy_healthy {
+            HealthStatus { status: "healthy".to_string(), latency_ms: Some(latency), last_checked: timestamp }
+        } else if auth.gemini {
+            HealthStatus { status: "degraded".to_string(), latency_ms: None, last_checked: timestamp }
+        } else {
+            HealthStatus { status: "unconfigured".to_string(), latency_ms: None, last_checked: timestamp }
+        },
+        qwen: if auth.qwen && proxy_healthy {
+            HealthStatus { status: "healthy".to_string(), latency_ms: Some(latency), last_checked: timestamp }
+        } else if auth.qwen {
+            HealthStatus { status: "degraded".to_string(), latency_ms: None, last_checked: timestamp }
+        } else {
+            HealthStatus { status: "unconfigured".to_string(), latency_ms: None, last_checked: timestamp }
+        },
+    })
+}
+
 // Handle deep link OAuth callback
 fn handle_deep_link(app: &tauri::AppHandle, urls: Vec<url::Url>) {
     for url in urls {
@@ -684,6 +890,7 @@ pub fn run() {
             disconnect_provider,
             get_config,
             save_config,
+            check_provider_health,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

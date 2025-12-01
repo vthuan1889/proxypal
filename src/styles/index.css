@@ -28,11 +28,10 @@
   -webkit-text-size-adjust: 100%;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #0f0f0f;
-  }
+/* Class-based dark mode */
+.dark {
+  color: #f6f6f6;
+  background-color: #0f0f0f;
 }
 
 * {
@@ -66,14 +65,12 @@ body,
   background: #9ca3af;
 }
 
-@media (prefers-color-scheme: dark) {
-  ::-webkit-scrollbar-thumb {
-    background: #4b5563;
-  }
+.dark ::-webkit-scrollbar-thumb {
+  background: #4b5563;
+}
 
-  ::-webkit-scrollbar-thumb:hover {
-    background: #6b7280;
-  }
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
 }
 
 /* Toast animations */
@@ -246,8 +243,6 @@ body,
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
-@media (prefers-color-scheme: dark) {
-  .hover-lift:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  }
+.dark .hover-lift:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
