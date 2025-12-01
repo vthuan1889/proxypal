@@ -1,9 +1,10 @@
-import { createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import { Button } from "../components/ui";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { ApiEndpoint } from "../components/ApiEndpoint";
 import { SetupModal } from "../components/SetupModal";
 import { UsageSummary } from "../components/UsageSummary";
+import { GettingStartedEmptyState } from "../components/EmptyState";
 import { appStore } from "../stores/app";
 import { toastStore } from "../stores/toast";
 import {
@@ -147,6 +148,8 @@ export function DashboardPage() {
     return providers.filter((p) => !status[p.provider]);
   };
 
+  const hasAnyProvider = () => connectedProviders().length > 0;
+
   return (
     <div class="min-h-screen flex flex-col">
       {/* Header */}
@@ -201,17 +204,27 @@ export function DashboardPage() {
       {/* Main content */}
       <main class="flex-1 p-6 overflow-y-auto">
         <div class="max-w-3xl mx-auto space-y-6 animate-stagger">
-          {/* Usage Summary */}
-          <UsageSummary />
+          {/* Show Getting Started for first-time users */}
+          <Show when={!hasAnyProvider()}>
+            <GettingStartedEmptyState
+              proxyRunning={proxyStatus().running}
+              onStart={toggleProxy}
+            />
+          </Show>
 
-          {/* API Endpoint */}
+          {/* Show Usage Summary only when user has providers */}
+          <Show when={hasAnyProvider()}>
+            <UsageSummary />
+          </Show>
+
+          {/* API Endpoint - always show */}
           <ApiEndpoint
             endpoint={proxyStatus().endpoint}
             running={proxyStatus().running}
           />
 
-          {/* Connected accounts */}
-          {connectedProviders().length > 0 && (
+          {/* Connected accounts - only show when has providers */}
+          <Show when={connectedProviders().length > 0}>
             <div>
               <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider mb-3">
                 Connected Accounts
@@ -263,19 +276,40 @@ export function DashboardPage() {
                 ))}
               </div>
             </div>
-          )}
+          </Show>
 
-          {/* Add more accounts */}
-          {disconnectedProviders().length > 0 && (
+          {/* Add accounts section */}
+          <Show when={disconnectedProviders().length > 0}>
             <div>
               <h2 class="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider mb-3">
-                Add More Accounts
+                {hasAnyProvider() ? "Add More Accounts" : "Connect an Account"}
               </h2>
-              {!proxyStatus().running && (
-                <p class="text-sm text-amber-600 dark:text-amber-400 mb-2">
-                  Start the proxy to connect accounts
-                </p>
-              )}
+              <Show when={!proxyStatus().running}>
+                <div class="flex items-center gap-2 p-3 mb-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                  <svg
+                    class="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                    />
+                  </svg>
+                  <p class="text-sm text-amber-700 dark:text-amber-300">
+                    Start the proxy first to connect accounts
+                  </p>
+                  <button
+                    onClick={toggleProxy}
+                    class="ml-auto text-xs font-medium text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-100 underline underline-offset-2"
+                  >
+                    Start now
+                  </button>
+                </div>
+              </Show>
               <div class="grid grid-cols-2 gap-3 animate-stagger">
                 {disconnectedProviders().map((provider) => (
                   <button
@@ -333,7 +367,7 @@ export function DashboardPage() {
                 ))}
               </div>
             </div>
-          )}
+          </Show>
 
           {/* Quick setup guides */}
           <div>

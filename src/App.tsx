@@ -1,6 +1,7 @@
 import { Match, Switch, onMount, Show } from "solid-js";
 import { WelcomePage, DashboardPage, SettingsPage } from "./pages";
 import { ToastContainer } from "./components/ui";
+import { CommandPalette } from "./components/CommandPalette";
 import { appStore } from "./stores/app";
 
 function App() {
@@ -40,6 +41,7 @@ function App() {
         </Switch>
       </Show>
       <ToastContainer />
+      <CommandPalette />
     </>
   );
 }
