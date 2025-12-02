@@ -293,3 +293,38 @@ export interface UsageStats {
 export async function getUsageStats(): Promise<UsageStats> {
   return invoke("get_usage_stats");
 }
+
+// Request History (persisted)
+export interface RequestHistory {
+  requests: RequestLog[];
+  totalTokensIn: number;
+  totalTokensOut: number;
+  totalCostUsd: number;
+}
+
+export async function getRequestHistory(): Promise<RequestHistory> {
+  return invoke("get_request_history");
+}
+
+export async function addRequestToHistory(
+  request: RequestLog,
+): Promise<RequestHistory> {
+  return invoke("add_request_to_history", { request });
+}
+
+export async function clearRequestHistory(): Promise<void> {
+  return invoke("clear_request_history");
+}
+
+// Test agent connection
+export interface AgentTestResult {
+  success: boolean;
+  message: string;
+  latencyMs?: number;
+}
+
+export async function testAgentConnection(
+  agentId: string,
+): Promise<AgentTestResult> {
+  return invoke("test_agent_connection", { agentId });
+}

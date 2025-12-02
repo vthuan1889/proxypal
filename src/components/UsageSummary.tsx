@@ -377,9 +377,15 @@ export function UsageSummary() {
 
       {/* Empty state when no usage yet */}
       <Show when={!loading() && !hasStats() && proxyStatus().running}>
-        <div class="text-center py-3 px-4 rounded-lg bg-gray-50 dark:bg-gray-800/30 border border-gray-200 dark:border-gray-700/50">
-          <p class="text-sm text-gray-500 dark:text-gray-400">
-            No API requests yet. Start coding with your connected AI tools!
+        <div class="text-center py-4 px-4 rounded-lg bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-100 dark:border-blue-800/50">
+          <div class="flex items-center justify-center gap-2 mb-2">
+            <div class="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            <p class="text-sm font-medium text-blue-700 dark:text-blue-300">
+              Ready to track usage
+            </p>
+          </div>
+          <p class="text-xs text-blue-600/70 dark:text-blue-400/70">
+            Stats will appear here as you use your AI tools through the proxy
           </p>
         </div>
       </Show>

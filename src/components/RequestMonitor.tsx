@@ -1,8 +1,14 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { onRequestLog, type RequestLog } from "../lib/tauri";
+import {
+  onRequestLog,
+  getRequestHistory,
+  addRequestToHistory,
+  clearRequestHistory,
+  type RequestHistory,
+} from "../lib/tauri";
 import { appStore } from "../stores/app";
 
-const MAX_LOGS = 50;
+const MAX_DISPLAY = 50;
 
 const providerColors: Record<string, string> = {
   claude:
@@ -11,6 +17,11 @@ const providerColors: Record<string, string> = {
     "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   gemini: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
   qwen: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  iflow: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400",
+  vertex:
+    "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400",
+  antigravity:
+    "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400",
   unknown: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400",
 };
 
@@ -31,19 +42,72 @@ function formatTime(timestamp: number): string {
   });
 }
 
+function formatDate(timestamp: number): string {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return "Today";
+  } else if (date.toDateString() === yesterday.toDateString()) {
+    return "Yesterday";
+  }
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function formatCost(cost: number): string {
+  if (cost < 0.01) return "<$0.01";
+  return `$${cost.toFixed(2)}`;
+}
+
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return tokens.toString();
+}
+
 export function RequestMonitor() {
   const { proxyStatus } = appStore;
-  const [logs, setLogs] = createSignal<RequestLog[]>([]);
+  const [history, setHistory] = createSignal<RequestHistory>({
+    requests: [],
+    totalTokensIn: 0,
+    totalTokensOut: 0,
+    totalCostUsd: 0,
+  });
   const [expanded, setExpanded] = createSignal(false);
+  const [loading, setLoading] = createSignal(true);
 
+  // Load history on mount
   onMount(async () => {
-    const unlisten = await onRequestLog((log) => {
-      setLogs((prev) => [log, ...prev].slice(0, MAX_LOGS));
+    try {
+      const savedHistory = await getRequestHistory();
+      setHistory(savedHistory);
+    } catch (err) {
+      console.error("Failed to load request history:", err);
+    } finally {
+      setLoading(false);
+    }
+
+    // Listen for new requests
+    const unlisten = await onRequestLog(async (log) => {
+      try {
+        // Persist to history and get updated totals
+        const updatedHistory = await addRequestToHistory(log);
+        setHistory(updatedHistory);
+      } catch (err) {
+        console.error("Failed to save request to history:", err);
+        // Still show in UI even if save fails
+        setHistory((prev) => ({
+          ...prev,
+          requests: [...prev.requests, log].slice(-100),
+        }));
+      }
     });
 
     onCleanup(() => {
@@ -51,9 +115,27 @@ export function RequestMonitor() {
     });
   });
 
-  const clearLogs = () => setLogs([]);
+  const handleClear = async () => {
+    try {
+      await clearRequestHistory();
+      setHistory({
+        requests: [],
+        totalTokensIn: 0,
+        totalTokensOut: 0,
+        totalCostUsd: 0,
+      });
+    } catch (err) {
+      console.error("Failed to clear history:", err);
+    }
+  };
 
-  const requestCount = () => logs().length;
+  // Get requests in reverse chronological order (newest first)
+  const displayRequests = () => {
+    return [...history().requests].reverse().slice(0, MAX_DISPLAY);
+  };
+
+  const requestCount = () => history().requests.length;
+  const hasRequests = () => requestCount() > 0;
 
   return (
     <div class="rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -68,22 +150,38 @@ export function RequestMonitor() {
               class={`w-2 h-2 rounded-full ${proxyStatus().running ? "bg-green-500 animate-pulse" : "bg-gray-400"}`}
             />
             <span class="font-medium text-gray-900 dark:text-gray-100 text-sm">
-              Request Monitor
+              Request History
             </span>
           </div>
-          <Show when={requestCount() > 0}>
+          <Show when={hasRequests()}>
             <span class="px-2 py-0.5 text-xs font-medium bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-400 rounded-full">
               {requestCount()}
             </span>
           </Show>
         </div>
         <div class="flex items-center gap-2">
-          <Show when={logs().length > 0}>
+          {/* Quick stats */}
+          <Show when={hasRequests()}>
+            <div class="hidden sm:flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400 mr-2">
+              <span class="flex items-center gap-1">
+                <span class="text-green-600 dark:text-green-400 font-medium">
+                  {formatCost(history().totalCostUsd)}
+                </span>
+                <span>saved</span>
+              </span>
+              <span class="text-gray-300 dark:text-gray-600">|</span>
+              <span>
+                {formatTokens(
+                  history().totalTokensIn + history().totalTokensOut,
+                )}{" "}
+                tokens
+              </span>
+            </div>
             <button
               class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
               onClick={(e) => {
                 e.stopPropagation();
-                clearLogs();
+                handleClear();
               }}
             >
               Clear
@@ -108,13 +206,79 @@ export function RequestMonitor() {
       {/* Expanded content */}
       <Show when={expanded()}>
         <div class="border-t border-gray-200 dark:border-gray-700">
+          {/* Stats bar when has requests */}
+          <Show when={hasRequests()}>
+            <div class="px-4 py-2 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-b border-gray-200 dark:border-gray-700 sm:hidden">
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-gray-600 dark:text-gray-400">
+                  Est. savings:{" "}
+                  <span class="font-semibold text-green-600 dark:text-green-400">
+                    {formatCost(history().totalCostUsd)}
+                  </span>
+                </span>
+                <span class="text-gray-500 dark:text-gray-400">
+                  {formatTokens(
+                    history().totalTokensIn + history().totalTokensOut,
+                  )}{" "}
+                  tokens
+                </span>
+              </div>
+            </div>
+          </Show>
+
           <Show
-            when={logs().length > 0}
+            when={!loading() && hasRequests()}
             fallback={
               <div class="px-4 py-8 text-center">
-                <Show
-                  when={proxyStatus().running}
-                  fallback={
+                <Show when={loading()}>
+                  <div class="flex items-center justify-center gap-2 text-gray-500">
+                    <svg
+                      class="w-4 h-4 animate-spin"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        class="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        stroke-width="4"
+                      />
+                      <path
+                        class="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
+                    </svg>
+                    <span class="text-sm">Loading history...</span>
+                  </div>
+                </Show>
+                <Show when={!loading()}>
+                  <Show
+                    when={proxyStatus().running}
+                    fallback={
+                      <div class="text-gray-500 dark:text-gray-400">
+                        <svg
+                          class="w-8 h-8 mx-auto mb-2 opacity-50"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="1.5"
+                            d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                          />
+                        </svg>
+                        <p class="text-sm font-medium">Proxy is offline</p>
+                        <p class="text-xs mt-1 text-gray-400">
+                          Start the proxy to begin tracking requests
+                        </p>
+                      </div>
+                    }
+                  >
                     <div class="text-gray-500 dark:text-gray-400">
                       <svg
                         class="w-8 h-8 mx-auto mb-2 opacity-50"
@@ -126,52 +290,45 @@ export function RequestMonitor() {
                           stroke-linecap="round"
                           stroke-linejoin="round"
                           stroke-width="1.5"
-                          d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                          d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
                         />
                       </svg>
-                      <p class="text-sm">Proxy is offline</p>
-                      <p class="text-xs mt-1">
-                        Start the proxy to see requests
+                      <p class="text-sm font-medium">Waiting for requests</p>
+                      <p class="text-xs mt-1 text-gray-400 max-w-xs mx-auto">
+                        Open your AI tool (Cursor, Claude Code, etc.) and make a
+                        request. It will appear here automatically.
                       </p>
+                      <div class="flex items-center justify-center gap-2 mt-3">
+                        <div class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                        <span class="text-xs text-green-600 dark:text-green-400">
+                          Proxy listening on port {proxyStatus().port}
+                        </span>
+                      </div>
                     </div>
-                  }
-                >
-                  <div class="text-gray-500 dark:text-gray-400">
-                    <svg
-                      class="w-8 h-8 mx-auto mb-2 opacity-50"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="1.5"
-                        d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    </svg>
-                    <p class="text-sm">Waiting for requests...</p>
-                    <p class="text-xs mt-1">Make an API call to see it here</p>
-                  </div>
+                  </Show>
                 </Show>
               </div>
             }
           >
-            <div class="max-h-64 overflow-y-auto">
-              <For each={logs()}>
+            <div class="max-h-72 overflow-y-auto">
+              <For each={displayRequests()}>
                 {(log, index) => (
                   <div
                     class={`px-4 py-2 flex items-center gap-3 text-sm ${
                       index() % 2 === 0
                         ? "bg-white dark:bg-gray-900/50"
                         : "bg-gray-50 dark:bg-gray-800/30"
-                    } animate-slide-up`}
-                    style={{ "animation-delay": `${index() * 20}ms` }}
+                    }`}
                   >
                     {/* Timestamp */}
-                    <span class="text-xs text-gray-400 dark:text-gray-500 font-mono w-16 flex-shrink-0">
-                      {formatTime(log.timestamp)}
-                    </span>
+                    <div class="flex flex-col items-end w-16 flex-shrink-0">
+                      <span class="text-[10px] text-gray-400 dark:text-gray-500">
+                        {formatDate(log.timestamp)}
+                      </span>
+                      <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">
+                        {formatTime(log.timestamp)}
+                      </span>
+                    </div>
 
                     {/* Provider badge */}
                     <span
@@ -180,10 +337,19 @@ export function RequestMonitor() {
                       {log.provider}
                     </span>
 
-                    {/* Method & Path */}
-                    <span class="text-gray-600 dark:text-gray-400 font-mono text-xs truncate flex-1">
-                      <span class="font-semibold">{log.method}</span> {log.path}
+                    {/* Model */}
+                    <span class="text-gray-600 dark:text-gray-400 text-xs truncate flex-1 font-mono">
+                      {log.model || "—"}
                     </span>
+
+                    {/* Tokens */}
+                    <Show when={log.tokensIn || log.tokensOut}>
+                      <span class="text-xs text-gray-400 dark:text-gray-500 font-mono hidden sm:block">
+                        {formatTokens(
+                          (log.tokensIn || 0) + (log.tokensOut || 0),
+                        )}
+                      </span>
+                    </Show>
 
                     {/* Status */}
                     <span
@@ -210,19 +376,42 @@ export function RequestMonitor() {
 // Compact version for embedding in other components
 export function RequestMonitorCompact() {
   const { proxyStatus } = appStore;
-  const [latestLog, setLatestLog] = createSignal<RequestLog | null>(null);
-  const [requestCount, setRequestCount] = createSignal(0);
+  const [history, setHistory] = createSignal<RequestHistory>({
+    requests: [],
+    totalTokensIn: 0,
+    totalTokensOut: 0,
+    totalCostUsd: 0,
+  });
 
   onMount(async () => {
-    const unlisten = await onRequestLog((log) => {
-      setLatestLog(log);
-      setRequestCount((c) => c + 1);
+    try {
+      const savedHistory = await getRequestHistory();
+      setHistory(savedHistory);
+    } catch (err) {
+      console.error("Failed to load request history:", err);
+    }
+
+    const unlisten = await onRequestLog(async (log) => {
+      try {
+        const updatedHistory = await addRequestToHistory(log);
+        setHistory(updatedHistory);
+      } catch (err) {
+        setHistory((prev) => ({
+          ...prev,
+          requests: [...prev.requests, log].slice(-100),
+        }));
+      }
     });
 
     onCleanup(() => {
       unlisten();
     });
   });
+
+  const latestLog = () => {
+    const reqs = history().requests;
+    return reqs.length > 0 ? reqs[reqs.length - 1] : null;
+  };
 
   return (
     <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -232,8 +421,14 @@ export function RequestMonitorCompact() {
       >
         <div class="flex items-center gap-1.5">
           <div class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-          <span>{requestCount()} requests</span>
+          <span>{history().requests.length} requests</span>
         </div>
+        <Show when={history().totalCostUsd > 0}>
+          <span class="text-gray-400">|</span>
+          <span class="text-green-600 dark:text-green-400 font-medium">
+            {formatCost(history().totalCostUsd)} saved
+          </span>
+        </Show>
         <Show when={latestLog()}>
           <span class="text-gray-400">|</span>
           <span>

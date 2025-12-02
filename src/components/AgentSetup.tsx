@@ -4,6 +4,7 @@ import {
   detectCliAgents,
   configureCliAgent,
   appendToShellProfile,
+  testAgentConnection,
   type AgentStatus,
   type AgentConfigResult,
 } from "../lib/tauri";
@@ -13,7 +14,9 @@ import { appStore } from "../stores/app";
 interface AgentCardProps {
   agent: AgentStatus;
   onConfigure: (agentId: string) => void;
+  onTest: (agentId: string) => void;
   configuring: boolean;
+  testing: boolean;
 }
 
 function AgentCard(props: AgentCardProps) {
@@ -107,8 +110,56 @@ function AgentCard(props: AgentCardProps) {
                     d="M5 13l4 4L19 7"
                   />
                 </svg>
-                Ready to use
+                Ready
               </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => props.onTest(props.agent.id)}
+                disabled={props.testing}
+              >
+                {props.testing ? (
+                  <span class="flex items-center gap-1.5">
+                    <svg
+                      class="w-3 h-3 animate-spin"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        class="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        stroke-width="4"
+                      />
+                      <path
+                        class="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
+                    </svg>
+                    Testing...
+                  </span>
+                ) : (
+                  <span class="flex items-center gap-1.5">
+                    <svg
+                      class="w-3 h-3"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M13 10V3L4 14h7v7l9-11h-7z"
+                      />
+                    </svg>
+                    Test
+                  </span>
+                )}
+              </Button>
             </Show>
             <a
               href={props.agent.docsUrl}
@@ -244,6 +295,7 @@ export function AgentSetup() {
   const [agents, setAgents] = createSignal<AgentStatus[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [configuring, setConfiguring] = createSignal<string | null>(null);
+  const [testing, setTesting] = createSignal<string | null>(null);
   const [configResult, setConfigResult] = createSignal<{
     result: AgentConfigResult;
     agentName: string;
@@ -295,6 +347,36 @@ export function AgentSetup() {
       toastStore.error("Configuration failed", String(error));
     } finally {
       setConfiguring(null);
+    }
+  };
+
+  const handleTest = async (agentId: string) => {
+    if (!proxyStatus().running) {
+      toastStore.warning(
+        "Start the proxy first",
+        "The proxy must be running to test connections",
+      );
+      return;
+    }
+
+    const agent = agents().find((a) => a.id === agentId);
+    setTesting(agentId);
+    try {
+      const result = await testAgentConnection(agentId);
+      if (result.success) {
+        const latencyText = result.latencyMs ? ` (${result.latencyMs}ms)` : "";
+        toastStore.success(
+          `${agent?.name || agentId} connected!`,
+          `Connection successful${latencyText}`,
+        );
+      } else {
+        toastStore.error(`${agent?.name || agentId} failed`, result.message);
+      }
+    } catch (error) {
+      console.error("Failed to test agent:", error);
+      toastStore.error("Test failed", String(error));
+    } finally {
+      setTesting(null);
     }
   };
 
@@ -401,7 +483,9 @@ export function AgentSetup() {
                 <AgentCard
                   agent={agent}
                   onConfigure={handleConfigure}
+                  onTest={handleTest}
                   configuring={configuring() === agent.id}
+                  testing={testing() === agent.id}
                 />
               )}
             </For>

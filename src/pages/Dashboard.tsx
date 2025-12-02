@@ -1,8 +1,9 @@
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createSignal, createEffect, onCleanup, Show } from "solid-js";
 import { Button } from "../components/ui";
 import { StatusIndicator } from "../components/StatusIndicator";
 import { ApiEndpoint } from "../components/ApiEndpoint";
 import { UsageSummary } from "../components/UsageSummary";
+import { SavingsCard } from "../components/SavingsCard";
 import { GettingStartedEmptyState } from "../components/EmptyState";
 import { ThemeToggleCompact } from "../components/ThemeToggle";
 import { RequestMonitor } from "../components/RequestMonitor";
@@ -18,6 +19,7 @@ import {
   pollOAuthStatus,
   disconnectProvider,
   refreshAuthStatus,
+  detectCliAgents,
   type Provider,
 } from "../lib/tauri";
 
@@ -56,6 +58,32 @@ export function DashboardPage() {
   const [recentlyConnected, setRecentlyConnected] = createSignal<Set<Provider>>(
     new Set(),
   );
+  const [hasConfiguredAgent, setHasConfiguredAgent] = createSignal(false);
+  const [onboardingDismissed, setOnboardingDismissed] = createSignal(
+    localStorage.getItem("proxypal-onboarding-dismissed") === "true",
+  );
+
+  // Check for configured agents
+  createEffect(() => {
+    detectCliAgents()
+      .then((agents) => {
+        const configured = agents.some((a) => a.configured);
+        setHasConfiguredAgent(configured);
+      })
+      .catch(console.error);
+  });
+
+  const dismissOnboarding = () => {
+    localStorage.setItem("proxypal-onboarding-dismissed", "true");
+    setOnboardingDismissed(true);
+  };
+
+  // Reset dismissed state if user disconnects all providers or hasn't completed setup
+  const shouldShowOnboarding = () => {
+    if (onboardingDismissed()) return false;
+    // Show if any step is incomplete
+    return !proxyStatus().running || !hasAnyProvider() || !hasConfiguredAgent();
+  };
 
   const toggleProxy = async () => {
     if (toggling()) return;
@@ -272,17 +300,37 @@ export function DashboardPage() {
       {/* Main content */}
       <main class="flex-1 p-4 sm:p-6 overflow-y-auto">
         <div class="max-w-3xl mx-auto space-y-4 sm:space-y-6 animate-stagger">
-          {/* Show Getting Started for first-time users */}
-          <Show when={!hasAnyProvider()}>
+          {/* Show Getting Started / Onboarding checklist */}
+          <Show
+            when={
+              shouldShowOnboarding() ||
+              (!onboardingDismissed() &&
+                hasAnyProvider() &&
+                hasConfiguredAgent())
+            }
+          >
             <GettingStartedEmptyState
               proxyRunning={proxyStatus().running}
               onStart={toggleProxy}
+              onDismiss={dismissOnboarding}
+              hasProvider={hasAnyProvider()}
+              hasConfiguredAgent={hasConfiguredAgent()}
             />
           </Show>
 
-          {/* Show Usage Summary only when user has providers */}
+          {/* Savings Card - prominent value proposition */}
+          <Show when={hasAnyProvider()}>
+            <SavingsCard />
+          </Show>
+
+          {/* Usage Summary - quick stats */}
           <Show when={hasAnyProvider()}>
             <UsageSummary />
+          </Show>
+
+          {/* Agent Setup - moved up for better discoverability */}
+          <Show when={hasAnyProvider()}>
+            <AgentSetup />
           </Show>
 
           {/* API Endpoint - always show */}
@@ -291,7 +339,7 @@ export function DashboardPage() {
             running={proxyStatus().running}
           />
 
-          {/* Live Request Monitor */}
+          {/* Request History */}
           <RequestMonitor />
 
           {/* Connected accounts - only show when has providers */}
@@ -453,11 +501,6 @@ export function DashboardPage() {
                 ))}
               </div>
             </div>
-          </Show>
-
-          {/* CLI Agents Setup */}
-          <Show when={hasAnyProvider()}>
-            <AgentSetup />
           </Show>
         </div>
       </main>

@@ -158,6 +158,71 @@ fn get_auth_path() -> std::path::PathBuf {
     config_dir.join("auth.json")
 }
 
+fn get_history_path() -> std::path::PathBuf {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("proxypal");
+    std::fs::create_dir_all(&config_dir).ok();
+    config_dir.join("history.json")
+}
+
+// Request history with metadata
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestHistory {
+    pub requests: Vec<RequestLog>,
+    pub total_tokens_in: u64,
+    pub total_tokens_out: u64,
+    pub total_cost_usd: f64,
+}
+
+// Load request history from file
+fn load_request_history() -> RequestHistory {
+    let path = get_history_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(history) = serde_json::from_str(&data) {
+                return history;
+            }
+        }
+    }
+    RequestHistory::default()
+}
+
+// Save request history to file (keep last 100 requests)
+fn save_request_history(history: &RequestHistory) -> Result<(), String> {
+    let path = get_history_path();
+    let mut trimmed = history.clone();
+    // Keep only last 100 requests
+    if trimmed.requests.len() > 100 {
+        trimmed.requests = trimmed.requests.split_off(trimmed.requests.len() - 100);
+    }
+    let data = serde_json::to_string_pretty(&trimmed).map_err(|e| e.to_string())?;
+    std::fs::write(path, data).map_err(|e| e.to_string())
+}
+
+// Estimate cost based on model and tokens
+fn estimate_request_cost(model: &str, tokens_in: u32, tokens_out: u32) -> f64 {
+    // Pricing per 1M tokens (input, output) - approximate as of 2024
+    let (input_rate, output_rate) = match model.to_lowercase().as_str() {
+        m if m.contains("claude-3-opus") => (15.0, 75.0),
+        m if m.contains("claude-3-sonnet") || m.contains("claude-3.5-sonnet") => (3.0, 15.0),
+        m if m.contains("claude-3-haiku") || m.contains("claude-3.5-haiku") => (0.25, 1.25),
+        m if m.contains("gpt-4o") => (2.5, 10.0),
+        m if m.contains("gpt-4-turbo") || m.contains("gpt-4") => (10.0, 30.0),
+        m if m.contains("gpt-3.5") => (0.5, 1.5),
+        m if m.contains("gemini-1.5-pro") => (1.25, 5.0),
+        m if m.contains("gemini-1.5-flash") => (0.075, 0.30),
+        m if m.contains("gemini-2") => (0.10, 0.40),
+        m if m.contains("qwen") => (0.50, 2.0),
+        _ => (1.0, 3.0), // Default conservative estimate
+    };
+    
+    let input_cost = (tokens_in as f64 / 1_000_000.0) * input_rate;
+    let output_cost = (tokens_out as f64 / 1_000_000.0) * output_rate;
+    input_cost + output_cost
+}
+
 // Load config from file
 fn load_config() -> AppConfig {
     let path = get_config_path();
@@ -615,6 +680,43 @@ async fn get_usage_stats(state: State<'_, AppState>) -> Result<UsageStats, Strin
     })
 }
 
+// Get request history
+#[tauri::command]
+fn get_request_history() -> RequestHistory {
+    load_request_history()
+}
+
+// Add a request to history (called when request-log event is emitted)
+#[tauri::command]
+fn add_request_to_history(request: RequestLog) -> Result<RequestHistory, String> {
+    let mut history = load_request_history();
+    
+    // Calculate cost for this request
+    let tokens_in = request.tokens_in.unwrap_or(0);
+    let tokens_out = request.tokens_out.unwrap_or(0);
+    let cost = estimate_request_cost(&request.model, tokens_in, tokens_out);
+    
+    // Update totals
+    history.total_tokens_in += tokens_in as u64;
+    history.total_tokens_out += tokens_out as u64;
+    history.total_cost_usd += cost;
+    
+    // Add request
+    history.requests.push(request);
+    
+    // Save
+    save_request_history(&history)?;
+    
+    Ok(history)
+}
+
+// Clear request history
+#[tauri::command]
+fn clear_request_history() -> Result<(), String> {
+    let history = RequestHistory::default();
+    save_request_history(&history)
+}
+
 #[tauri::command]
 async fn open_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider: String) -> Result<String, String> {
     // Get proxy port from config
@@ -1025,6 +1127,69 @@ async fn check_provider_health(state: State<'_, AppState>) -> Result<ProviderHea
             HealthStatus { status: "unconfigured".to_string(), latency_ms: None, last_checked: timestamp }
         },
     })
+}
+
+// Test agent connection by making a simple API call through the proxy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTestResult {
+    pub success: bool,
+    pub message: String,
+    pub latency_ms: Option<u64>,
+}
+
+#[tauri::command]
+async fn test_agent_connection(state: State<'_, AppState>, agent_id: String) -> Result<AgentTestResult, String> {
+    let config = state.config.lock().unwrap().clone();
+    let proxy_running = state.proxy_status.lock().unwrap().running;
+    
+    if !proxy_running {
+        return Ok(AgentTestResult {
+            success: false,
+            message: "Proxy is not running".to_string(),
+            latency_ms: None,
+        });
+    }
+    
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    
+    // Use /v1/models endpoint for testing - lightweight and doesn't consume tokens
+    let endpoint = format!("http://localhost:{}/v1/models", config.port);
+    
+    let start = std::time::Instant::now();
+    let response = client.get(&endpoint)
+        .header("Authorization", "Bearer proxypal-local")
+        .send()
+        .await;
+    let latency = start.elapsed().as_millis() as u64;
+    
+    match response {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                Ok(AgentTestResult {
+                    success: true,
+                    message: format!("Connection successful! {} is ready to use.", agent_id),
+                    latency_ms: Some(latency),
+                })
+            } else {
+                Ok(AgentTestResult {
+                    success: false,
+                    message: format!("Proxy returned status {}", resp.status()),
+                    latency_ms: Some(latency),
+                })
+            }
+        }
+        Err(e) => {
+            Ok(AgentTestResult {
+                success: false,
+                message: format!("Connection failed: {}", e),
+                latency_ms: None,
+            })
+        }
+    }
 }
 
 // Handle deep link OAuth callback
@@ -1856,6 +2021,10 @@ pub fn run() {
             get_shell_profile_path,
             append_to_shell_profile,
             get_usage_stats,
+            get_request_history,
+            add_request_to_history,
+            clear_request_history,
+            test_agent_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
