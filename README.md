@@ -10,9 +10,13 @@ A desktop app that lets you use your AI subscriptions (Claude, ChatGPT, Gemini) 
 - **Request history** - Monitor all AI requests through the proxy
 - **Auto-configure** - Detects installed CLI agents and configures them automatically
 
+## Supported Platforms
+
+Currently only **macOS (Apple Silicon)** is supported. Intel Mac, Windows, and Linux support coming when CLIProxyAPI binaries are available for those platforms.
+
 ## Quick Start
 
-1. Download the latest release for your platform
+1. Download the latest release from [Releases](https://github.com/heyhuynhgiabuu/proxypal/releases)
 2. Start the proxy (toggle in header)
 3. Connect your AI account(s)
 4. Configure your coding tool to use `http://localhost:9090/v1`
