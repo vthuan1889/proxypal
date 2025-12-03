@@ -1,7 +1,15 @@
+import { createSignal, onCleanup } from "solid-js";
 import { Button } from "../components/ui";
 import { ProviderCard } from "../components/ProviderCard";
 import { appStore } from "../stores/app";
-import { openOAuth, type Provider } from "../lib/tauri";
+import { toastStore } from "../stores/toast";
+import {
+  openOAuth,
+  pollOAuthStatus,
+  refreshAuthStatus,
+  startProxy,
+  type Provider,
+} from "../lib/tauri";
 
 const providers = [
   {
@@ -49,13 +57,67 @@ const providers = [
 ];
 
 export function WelcomePage() {
-  const { authStatus, setCurrentPage } = appStore;
+  const {
+    authStatus,
+    setAuthStatus,
+    proxyStatus,
+    setProxyStatus,
+    setCurrentPage,
+  } = appStore;
+  const [connecting, setConnecting] = createSignal<Provider | null>(null);
 
   const handleConnect = async (provider: Provider) => {
+    // Auto-start proxy if not running
+    if (!proxyStatus().running) {
+      toastStore.info("Starting proxy...", "Please wait");
+      try {
+        const status = await startProxy();
+        setProxyStatus(status);
+        toastStore.success("Proxy started", `Listening on port ${status.port}`);
+      } catch (error) {
+        console.error("Failed to start proxy:", error);
+        toastStore.error("Failed to start proxy", String(error));
+        return;
+      }
+    }
+
+    setConnecting(provider);
+    toastStore.info(
+      `Connecting to ${provider}...`,
+      "Complete authentication in your browser",
+    );
+
     try {
-      await openOAuth(provider);
+      const oauthState = await openOAuth(provider);
+      let attempts = 0;
+      const maxAttempts = 120;
+      const pollInterval = setInterval(async () => {
+        attempts++;
+        try {
+          const completed = await pollOAuthStatus(oauthState);
+          if (completed) {
+            clearInterval(pollInterval);
+            const newAuth = await refreshAuthStatus();
+            setAuthStatus(newAuth);
+            setConnecting(null);
+            toastStore.success(
+              `${provider} connected!`,
+              "You can now use this provider",
+            );
+          } else if (attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            setConnecting(null);
+            toastStore.error("Connection timeout", "Please try again");
+          }
+        } catch (err) {
+          console.error("Poll error:", err);
+        }
+      }, 1000);
+      onCleanup(() => clearInterval(pollInterval));
     } catch (error) {
       console.error("Failed to start OAuth:", error);
+      setConnecting(null);
+      toastStore.error("Connection failed", String(error));
     }
   };
 
@@ -116,6 +178,7 @@ export function WelcomePage() {
                 logo={provider.logo}
                 description={provider.description}
                 connected={authStatus()[provider.provider]}
+                connecting={connecting() === provider.provider}
                 onConnect={handleConnect}
               />
             ))}

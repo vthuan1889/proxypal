@@ -8,6 +8,7 @@ interface ProviderCardProps {
   icon?: string;
   logo?: string;
   connected: boolean;
+  connecting?: boolean;
   description: string;
   onConnect: (provider: Provider) => Promise<void>;
 }
@@ -23,6 +24,9 @@ export function ProviderCard(props: ProviderCardProps) {
       setLoading(false);
     }
   };
+
+  // Use external connecting state if provided, otherwise use internal loading state
+  const isLoading = () => props.connecting ?? loading();
 
   return (
     <div
@@ -75,7 +79,7 @@ export function ProviderCard(props: ProviderCardProps) {
         <Button
           variant="primary"
           size="sm"
-          loading={loading()}
+          loading={isLoading()}
           onClick={handleConnect}
         >
           Connect
