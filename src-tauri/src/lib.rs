@@ -1864,10 +1864,14 @@ export CODE_ASSIST_ENDPOINT="{}"
             let amp_dir = home.join(".config/amp");
             std::fs::create_dir_all(&amp_dir).map_err(|e| e.to_string())?;
             
+            // Amp CLI requires localhost URL (not 127.0.0.1) per CLIProxyAPI docs
+            // See: https://help.router-for.me/agent-client/amp-cli.html
+            let amp_endpoint = format!("http://localhost:{}", port);
+            
             // Write settings.json
             let settings_content = format!(r#"{{
   "amp.url": "{}"
-}}"#, endpoint);
+}}"#, amp_endpoint);
             
             let config_path = amp_dir.join("settings.json");
             std::fs::write(&config_path, &settings_content).map_err(|e| e.to_string())?;
@@ -1875,7 +1879,7 @@ export CODE_ASSIST_ENDPOINT="{}"
             // Also provide env var option
             let shell_config = format!(r#"# ProxyPal - Amp CLI Configuration (alternative to settings.json)
 export AMP_URL="{}"
-"#, endpoint);
+"#, amp_endpoint);
             
             Ok(serde_json::json!({
                 "success": true,
