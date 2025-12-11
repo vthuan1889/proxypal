@@ -110,6 +110,9 @@ pub struct AppConfig {
     pub amp_routing_mode: String, // "mappings" or "openai" - default is "mappings"
     #[serde(default)]
     pub copilot: CopilotConfig,
+    // Force model mappings to take precedence over local API keys (synced with CLIProxyAPI)
+    #[serde(default)]
+    pub force_model_mappings: bool,
     // Persisted API keys for providers (stored in config, synced to CLIProxyAPI on startup)
     #[serde(default)]
     pub claude_api_keys: Vec<ClaudeApiKey>,
@@ -243,6 +246,7 @@ impl Default for AppConfig {
             amp_openai_providers: Vec::new(),
             amp_routing_mode: "mappings".to_string(),
             copilot: CopilotConfig::default(),
+            force_model_mappings: false,
             claude_api_keys: Vec::new(),
             gemini_api_keys: Vec::new(),
             codex_api_keys: Vec::new(),
@@ -1144,6 +1148,15 @@ ampcode:
         .send()
         .await;
     
+    // Sync force-model-mappings setting from config to proxy runtime
+    let force_mappings_url = format!("http://127.0.0.1:{}/v0/management/ampcode/force-model-mappings", port);
+    let _ = client
+        .put(&force_mappings_url)
+        .header("X-Management-Key", "proxypal-mgmt-key")
+        .json(&serde_json::json!({"value": config.force_model_mappings}))
+        .send()
+        .await;
+    
     // Start log file watcher for request tracking
     // This replaces the old polling approach and captures ALL requests including Amp proxy forwarding
     let log_path = config_dir.join("logs").join("main.log");
@@ -1157,6 +1170,21 @@ ampcode:
     
     let app_handle2 = app.clone();
     start_log_watcher(app_handle2, log_path, log_watcher_running, request_counter);
+    
+    // Sync usage statistics from proxy to local history on startup (in background)
+    // This ensures analytics page shows data without requiring restart or manual refresh
+    let port = config.port;
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        let client = reqwest::Client::new();
+        let usage_url = format!("http://127.0.0.1:{}/v0/management/usage", port);
+        let _ = client
+            .get(&usage_url)
+            .header("X-Management-Key", "proxypal-mgmt-key")
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+    });
 
     // Update status
     let new_status = {
