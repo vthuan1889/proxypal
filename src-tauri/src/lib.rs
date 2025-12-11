@@ -927,6 +927,18 @@ async fn start_proxy(
         entry.push_str("        name: \"gemini-2.5-pro\"\n");
         entry.push_str("      - alias: \"copilot-gemini-3-pro\"\n");
         entry.push_str("        name: \"gemini-3-pro-preview\"\n");
+        // Claude models (GA)
+        entry.push_str("      - alias: \"copilot-claude-haiku-4.5\"\n");
+        entry.push_str("        name: \"claude-haiku-4.5\"\n");
+        entry.push_str("      - alias: \"copilot-claude-opus-4.1\"\n");
+        entry.push_str("        name: \"claude-opus-4.1\"\n");
+        entry.push_str("      - alias: \"copilot-claude-sonnet-4\"\n");
+        entry.push_str("        name: \"claude-sonnet-4\"\n");
+        entry.push_str("      - alias: \"copilot-claude-sonnet-4.5\"\n");
+        entry.push_str("        name: \"claude-sonnet-4.5\"\n");
+        // Claude models (Preview)
+        entry.push_str("      - alias: \"copilot-claude-opus-4.5\"\n");
+        entry.push_str("        name: \"claude-opus-4.5\"\n");
         openai_compat_entries.push(entry);
     }
     
@@ -946,30 +958,7 @@ async fn start_proxy(
     let claude_api_key_section = {
         let mut entries: Vec<String> = Vec::new();
         
-        // Add copilot entry if enabled
-        if config.copilot.enabled {
-            let port = config.copilot.port;
-            let mut entry = String::new();
-            entry.push_str("  - api-key: \"dummy\"\n");
-            entry.push_str(&format!("    base-url: \"http://localhost:{}\"\n", port));
-            entry.push_str("    models:\n");
-            // Claude models (GA)
-            entry.push_str("      - alias: \"copilot-claude-haiku-4.5\"\n");
-            entry.push_str("        name: \"claude-haiku-4.5\"\n");
-            entry.push_str("      - alias: \"copilot-claude-opus-4.1\"\n");
-            entry.push_str("        name: \"claude-opus-4.1\"\n");
-            entry.push_str("      - alias: \"copilot-claude-sonnet-4\"\n");
-            entry.push_str("        name: \"claude-sonnet-4\"\n");
-            entry.push_str("      - alias: \"copilot-claude-sonnet-4.5\"\n");
-            entry.push_str("        name: \"claude-sonnet-4.5\"\n");
-            // Claude models (Preview)
-            entry.push_str("      - alias: \"copilot-claude-opus-4.5\"\n");
-            entry.push_str("        name: \"claude-opus-4.5\"\n");
-            entry.push_str("    proxy-url: \"\"\n");
-            entries.push(entry);
-        }
-        
-        // Add user's persisted Claude API keys
+        // Add user's persisted Claude API keys only
         for key in &config.claude_api_keys {
             let mut entry = String::new();
             entry.push_str(&format!("  - api-key: \"{}\"\n", key.api_key));
