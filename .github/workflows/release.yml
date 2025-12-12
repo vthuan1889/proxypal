@@ -108,50 +108,23 @@ jobs:
           RELEASE_DATE=$(gh release view $GITHUB_REF_NAME --repo $REPO --json publishedAt -q .publishedAt)
           RELEASE_NOTES=$(gh release view $GITHUB_REF_NAME --repo $REPO --json body -q .body)
 
-          # Download signature files
-          mkdir -p sigs
-          gh release download $GITHUB_REF_NAME --repo $REPO --pattern "*.sig" --dir sigs || true
-
-          # Read signatures
-          MACOS_AARCH64_SIG=""
-          MACOS_X64_SIG=""
-          LINUX_SIG=""
-          WINDOWS_SIG=""
-
-          if [ -f "sigs/ProxyPal_aarch64.app.tar.gz.sig" ]; then
-            MACOS_AARCH64_SIG=$(cat "sigs/ProxyPal_aarch64.app.tar.gz.sig")
-          fi
-          if [ -f "sigs/ProxyPal_x64.app.tar.gz.sig" ]; then
-            MACOS_X64_SIG=$(cat "sigs/ProxyPal_x64.app.tar.gz.sig")
-          fi
-          if [ -f "sigs/ProxyPal_${VERSION}_amd64.AppImage.sig" ]; then
-            LINUX_SIG=$(cat "sigs/ProxyPal_${VERSION}_amd64.AppImage.sig")
-          fi
-          if [ -f "sigs/ProxyPal_${VERSION}_x64-setup.nsis.zip.sig" ]; then
-            WINDOWS_SIG=$(cat "sigs/ProxyPal_${VERSION}_x64-setup.nsis.zip.sig")
-          fi
-
-          # Generate latest.json
-          cat > latest.json << EOF
+          # Generate latest.json (without signatures for OSS simplicity)
+          cat > latest.json <<EOF
           {
             "version": "${VERSION}",
             "notes": "See the release notes on GitHub",
             "pub_date": "${RELEASE_DATE}",
             "platforms": {
               "darwin-aarch64": {
-                "signature": "${MACOS_AARCH64_SIG}",
                 "url": "https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/ProxyPal_aarch64.app.tar.gz"
               },
               "darwin-x86_64": {
-                "signature": "${MACOS_X64_SIG}",
                 "url": "https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/ProxyPal_x64.app.tar.gz"
               },
               "linux-x86_64": {
-                "signature": "${LINUX_SIG}",
                 "url": "https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/ProxyPal_${VERSION}_amd64.AppImage"
               },
               "windows-x86_64": {
-                "signature": "${WINDOWS_SIG}",
                 "url": "https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/ProxyPal_${VERSION}_x64-setup.nsis.zip"
               }
             }
