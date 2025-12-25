@@ -18,6 +18,7 @@ import {
 	fetchAntigravityQuota,
 	getUsageStats,
 	importVertexCredential,
+	type ModelQuota,
 	onRequestLog,
 	openOAuth,
 	type Provider,
@@ -1020,6 +1021,66 @@ function QuotaWidget(props: { authStatus: { antigravity: number } }) {
 	const [loading, setLoading] = createSignal(false);
 	const [error, setError] = createSignal<string | null>(null);
 	const [expanded, setExpanded] = createSignal(false);
+	const [showFilterMenu, setShowFilterMenu] = createSignal(false);
+	const [hiddenModels, setHiddenModels] = createSignal<Set<string>>(new Set());
+
+	// Load hidden models filter from localStorage
+	onMount(() => {
+		const saved = localStorage.getItem("proxypal-quota-hidden-models");
+		if (saved) {
+			try {
+				setHiddenModels(new Set(JSON.parse(saved) as string[]));
+			} catch {
+				// Ignore invalid JSON
+			}
+		}
+	});
+
+	// Save hidden models filter to localStorage
+	const saveHiddenModels = (models: Set<string>) => {
+		setHiddenModels(models);
+		localStorage.setItem(
+			"proxypal-quota-hidden-models",
+			JSON.stringify([...models]),
+		);
+	};
+
+	// Get all unique model names across all accounts
+	const allModels = () => {
+		const models = new Set<string>();
+		for (const account of quotaData()) {
+			for (const quota of account.quotas) {
+				models.add(quota.model);
+			}
+		}
+		return [...models].sort();
+	};
+
+	// Toggle model visibility
+	const toggleModel = (model: string) => {
+		const current = new Set(hiddenModels());
+		if (current.has(model)) {
+			current.delete(model);
+		} else {
+			current.add(model);
+		}
+		saveHiddenModels(current);
+	};
+
+	// Show all models
+	const showAllModels = () => {
+		saveHiddenModels(new Set());
+	};
+
+	// Hide all models
+	const hideAllModels = () => {
+		saveHiddenModels(new Set(allModels()));
+	};
+
+	// Filter quotas for an account
+	const filterQuotas = (quotas: ModelQuota[]) => {
+		return quotas.filter((q) => !hiddenModels().has(q.model));
+	};
 
 	const loadQuota = async () => {
 		setLoading(true);
@@ -1080,6 +1141,80 @@ function QuotaWidget(props: { authStatus: { antigravity: number } }) {
 					</Show>
 				</div>
 				<div class="flex items-center gap-2">
+					{/* Filter button */}
+					<div class="relative">
+						<button
+							onClick={(e) => {
+								e.stopPropagation();
+								setShowFilterMenu(!showFilterMenu());
+							}}
+							class={`p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 ${hiddenModels().size > 0 ? "text-blue-500 dark:text-blue-400" : ""}`}
+							title="Filter models"
+						>
+							<svg
+								class="w-4 h-4"
+								fill="none"
+								stroke="currentColor"
+								viewBox="0 0 24 24"
+							>
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="2"
+									d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+								/>
+							</svg>
+						</button>
+						{/* Filter dropdown menu */}
+						<Show when={showFilterMenu()}>
+							<div
+								class="absolute right-0 top-full mt-1 z-20 w-56 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-2"
+								onClick={(e) => e.stopPropagation()}
+							>
+								<div class="px-3 py-1.5 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center">
+									<span class="text-xs font-medium text-gray-700 dark:text-gray-300">
+										Show Models
+									</span>
+									<div class="flex gap-2">
+										<button
+											onClick={() => showAllModels()}
+											class="text-[10px] text-blue-600 dark:text-blue-400 hover:underline"
+										>
+											All
+										</button>
+										<button
+											onClick={() => hideAllModels()}
+											class="text-[10px] text-gray-500 dark:text-gray-400 hover:underline"
+										>
+											None
+										</button>
+									</div>
+								</div>
+								<div class="max-h-48 overflow-y-auto">
+									<For each={allModels()}>
+										{(model) => (
+											<label class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer">
+												<input
+													type="checkbox"
+													checked={!hiddenModels().has(model)}
+													onChange={() => toggleModel(model)}
+													class="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+												/>
+												<span class="text-xs text-gray-700 dark:text-gray-300 truncate">
+													{model}
+												</span>
+											</label>
+										)}
+									</For>
+								</div>
+								<Show when={allModels().length === 0}>
+									<p class="px-3 py-2 text-xs text-gray-500">
+										Load quota data first
+									</p>
+								</Show>
+							</div>
+						</Show>
+					</div>
 					<button
 						onClick={(e) => {
 							e.stopPropagation();
@@ -1174,6 +1309,7 @@ function QuotaWidget(props: { authStatus: { antigravity: number } }) {
 											</Show>
 											<Show when={!account.error}>
 												<span class="text-xs text-gray-500">
+													{filterQuotas(account.quotas).length}/
 													{account.quotas.length} models
 												</span>
 											</Show>
@@ -1197,11 +1333,11 @@ function QuotaWidget(props: { authStatus: { antigravity: number } }) {
 										when={
 											accountExpanded() &&
 											!account.error &&
-											account.quotas.length > 0
+											filterQuotas(account.quotas).length > 0
 										}
 									>
 										<div class="p-3 space-y-2 bg-white dark:bg-gray-800">
-											<For each={account.quotas}>
+											<For each={filterQuotas(account.quotas)}>
 												{(quota) => (
 													<div class="space-y-1">
 														<div class="flex items-center justify-between text-xs">
@@ -1246,6 +1382,22 @@ function QuotaWidget(props: { authStatus: { antigravity: number } }) {
 										<div class="p-3 bg-white dark:bg-gray-800">
 											<p class="text-xs text-gray-500">
 												No quota data available
+											</p>
+										</div>
+									</Show>
+
+									{/* Show when all models are filtered out */}
+									<Show
+										when={
+											accountExpanded() &&
+											!account.error &&
+											account.quotas.length > 0 &&
+											filterQuotas(account.quotas).length === 0
+										}
+									>
+										<div class="p-3 bg-white dark:bg-gray-800">
+											<p class="text-xs text-gray-500">
+												All models hidden by filter
 											</p>
 										</div>
 									</Show>
