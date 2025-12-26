@@ -15,25 +15,34 @@ fn main() {
     let binary_path = binaries_dir.join(&binary_name);
 
     // Download binary if it doesn't exist
+    // Skip download in CI when only checking (not building release)
+    let is_ci = env::var("CI").is_ok();
+    let is_release = env::var("PROFILE").map(|p| p == "release").unwrap_or(false);
+    
     if !binary_path.exists() {
-        println!("cargo:warning=Binary not found: {}", binary_name);
-        println!("cargo:warning=Downloading from CLIProxyAPI releases...");
+        if is_ci && !is_release {
+            // In CI check mode, just warn but don't fail
+            println!("cargo:warning=Binary not found: {} (skipping download in CI check)", binary_name);
+        } else {
+            println!("cargo:warning=Binary not found: {}", binary_name);
+            println!("cargo:warning=Downloading from CLIProxyAPI releases...");
 
-        let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("scripts")
-            .join("download-binaries.sh");
+            let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts")
+                .join("download-binaries.sh");
 
-        let status = Command::new("bash")
-            .arg(&script_path)
-            .arg(&binary_name)
-            .status()
-            .expect("Failed to execute download script");
+            let status = Command::new("bash")
+                .arg(&script_path)
+                .arg(&binary_name)
+                .status()
+                .expect("Failed to execute download script");
 
-        if !status.success() {
-            panic!(
-                "Failed to download binary: {}. Run scripts/download-binaries.sh manually.",
-                binary_name
-            );
+            if !status.success() {
+                panic!(
+                    "Failed to download binary: {}. Run scripts/download-binaries.sh manually.",
+                    binary_name
+                );
+            }
         }
     }
 
