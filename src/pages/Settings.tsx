@@ -3362,6 +3362,17 @@ export function SettingsPage() {
 							<div class="border-t border-gray-200 dark:border-gray-700" />
 
 							<Switch
+								label="Disable Control Panel"
+								description="Hide CLIProxyAPI's web management UI. Disable to access the control panel at http://localhost:PORT"
+								checked={config().disableControlPanel ?? true}
+								onChange={(checked) =>
+									handleConfigChange("disableControlPanel", checked)
+								}
+							/>
+
+							<div class="border-t border-gray-200 dark:border-gray-700" />
+
+							<Switch
 								label="Log to File"
 								description="Write logs to rotating files instead of stdout"
 								checked={config().loggingToFile}

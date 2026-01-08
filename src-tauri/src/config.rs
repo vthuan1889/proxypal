@@ -80,6 +80,12 @@ pub struct AppConfig {
     pub ssh_configs: Vec<SshConfig>,
     #[serde(default)]
     pub cloudflare_configs: Vec<CloudflareConfig>,
+    #[serde(default = "default_disable_control_panel")]
+    pub disable_control_panel: bool,
+}
+
+fn default_disable_control_panel() -> bool {
+    true
 }
 
 fn default_management_key() -> String {
@@ -154,6 +160,7 @@ impl Default for AppConfig {
             ws_auth: false,
             ssh_configs: Vec::new(),
             cloudflare_configs: Vec::new(),
+            disable_control_panel: true,
         }
     }
 }

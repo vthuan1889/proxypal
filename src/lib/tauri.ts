@@ -306,6 +306,7 @@ export interface AppConfig {
 	geminiThinkingInjection?: boolean; // Inject thinking config for Gemini 3 models
 	sshConfigs?: SshConfig[];
 	cloudflareConfigs?: CloudflareConfig[];
+	disableControlPanel?: boolean; // Hide CLIProxyAPI's web management UI
 }
 
 export async function getConfig(): Promise<AppConfig> {

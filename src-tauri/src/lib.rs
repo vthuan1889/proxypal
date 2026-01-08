@@ -989,7 +989,7 @@ quota-exceeded:
 remote-management:
   allow-remote: true
   secret-key: "{}"
-  disable-control-panel: true
+  disable-control-panel: {}
 
 {}{}{}{}{}{}# Amp CLI Integration - enables amp login and management routes
 # See: https://help.router-for.me/agent-client/amp-cli.html
@@ -1018,6 +1018,7 @@ ws-auth: {}
         config.quota_switch_project,
         config.quota_switch_preview_model,
         config.management_key,
+        config.disable_control_panel,
         openai_compat_section,
         claude_api_key_section,
         gemini_api_key_section,
