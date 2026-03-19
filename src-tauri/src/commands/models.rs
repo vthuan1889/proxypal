@@ -416,8 +416,30 @@ pub(crate) fn get_model_limits(model_id: &str, owned_by: &str, source: &str) -> 
         if model_lower.contains("o3") || model_lower.contains("o1") {
             return (200000, 100000);
         } else if model_lower.contains("gpt-5") || model_lower.contains("gpt5") {
-            // GPT-5 via Copilot: 128K context (Copilot limit)
-            // GPT-5 via ChatGPT/ProxyPal: 400K context
+            // GPT-5.4 series: 400K context, varying output
+            if model_lower.contains("5.4-nano") || model_lower.contains("5-nano") {
+                // GPT-5.4 nano / GPT-5 nano: smallest, cheapest
+                if source == "copilot" {
+                    return (128000, 16384);
+                } else {
+                    return (400000, 16384);
+                }
+            } else if model_lower.contains("5.4-mini") {
+                // GPT-5.4 mini: fast coding model
+                if source == "copilot" {
+                    return (128000, 32768);
+                } else {
+                    return (400000, 32768);
+                }
+            } else if model_lower.contains("5.4") {
+                // GPT-5.4 full: 400K context, 128K output
+                if source == "copilot" {
+                    return (128000, 128000);
+                } else {
+                    return (400000, 128000);
+                }
+            }
+            // GPT-5 / GPT-5.x base models
             if source == "copilot" {
                 return (128000, 32768);
             } else {
