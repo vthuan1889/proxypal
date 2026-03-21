@@ -31,12 +31,21 @@ pub async fn get_logs(
     let url = format!("{}?lines={}", get_management_url(port, "logs"), lines_param);
 
     let client = build_management_client();
-    let response = client
+    let response = match client
         .get(&url)
         .header("X-Management-Key", &get_management_key())
         .send()
         .await
-        .map_err(|e| format!("Failed to get logs: {}", e))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Proxy not yet reachable (e.g. still starting) — return empty list
+            if e.is_connect() || e.is_timeout() {
+                return Ok(vec![]);
+            }
+            return Err(format!("Failed to get logs: {}", e));
+        }
+    };
 
     if !response.status().is_success() {
         let status = response.status();

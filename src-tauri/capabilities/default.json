@@ -16,7 +16,7 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "cliproxyapi",
+          "name": "cli-proxy-api",
           "sidecar": true,
           "args": true
         }
@@ -35,6 +35,7 @@
     "fs:allow-write-text-file",
     "updater:default",
     "process:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "os:default"
   ]
 }

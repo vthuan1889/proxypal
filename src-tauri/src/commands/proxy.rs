@@ -58,7 +58,15 @@ pub fn get_system_proxy() -> Result<Option<String>, String> {
 /// Build the complete proxy-config.yaml content from AppConfig.
 /// Includes all provider configs, API keys, routing, payload injection,
 /// and appends user customizations from proxy-config-custom.yaml.
-fn build_proxy_config_yaml(config: &AppConfig, config_dir: &std::path::Path) -> Result<String, String> {
+///
+/// `auth_dir` is the absolute path to the credential directory (e.g. `~/.cli-proxy-api` expanded).
+/// We pass it explicitly so the Go binary receives an absolute path — on Windows `~` is not
+/// automatically expanded by the shell, causing the sidecar to create a literal `~` directory.
+fn build_proxy_config_yaml(
+    config: &AppConfig,
+    config_dir: &std::path::Path,
+    auth_dir: &std::path::Path,
+) -> Result<String, String> {
     let proxy_url_line = build_proxy_url_line(config);
     let amp_api_key_line = build_amp_api_key_line(config);
     let amp_model_mappings_section = build_amp_model_mappings_section(config);
@@ -77,7 +85,7 @@ fn build_proxy_config_yaml(config: &AppConfig, config_dir: &std::path::Path) -> 
     let mut proxy_config = format!(
         r#"# ProxyPal generated config
 port: {}
-auth-dir: "~/.cli-proxy-api"
+auth-dir: "{}"
 api-keys:
   - "{}"
 debug: {}
@@ -114,6 +122,9 @@ commercial-mode: {}
 ws-auth: {}
 "#,
         config.port,
+        // Use forward slashes even on Windows — the Go binary handles both,
+        // and this avoids YAML escaping issues with backslashes.
+        auth_dir.to_string_lossy().replace('\\', "/"),
         config.proxy_api_key,
         config.debug,
         config.usage_stats_enabled,
@@ -550,34 +561,73 @@ pub async fn start_proxy(
     }
     #[cfg(windows)]
     {
-        // On Windows, use netstat and taskkill for port (hidden window)
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", &format!("for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :{} ^| findstr LISTENING') do taskkill /F /PID %a 2>nul", port)]);
+        // Kill by port using PowerShell (more reliable than cmd for /f parsing)
+        let kill_by_port_script = format!(
+            "Get-NetTCPConnection -LocalPort {} -State Listen -ErrorAction SilentlyContinue | \
+             Select-Object -ExpandProperty OwningProcess | \
+             ForEach-Object {{ taskkill /F /PID $_ 2>$null }}",
+            port
+        );
+        let mut ps_cmd = std::process::Command::new("powershell");
+        ps_cmd.args(["-NoProfile", "-NonInteractive", "-Command", &kill_by_port_script]);
         #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        let _ = cmd.output();
-        
-        // Also kill by process name on Windows (hidden window)
+        ps_cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = ps_cmd.output();
+
+        // Kill by process name — sidecar binary is named cli-proxy-api.exe (with hyphens)
         let mut cmd2 = std::process::Command::new("cmd");
-        cmd2.args(["/C", "taskkill /F /IM cliproxyapi*.exe 2>nul"]);
+        cmd2.args(["/C", "taskkill /F /IM cli-proxy-api*.exe 2>nul"]);
         #[cfg(target_os = "windows")]
         cmd2.creation_flags(CREATE_NO_WINDOW);
         let _ = cmd2.output();
     }
 
     // Longer delay to ensure port is fully released
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // On Windows, CloseWait TCP connections from the previous process can linger for 2-3s
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
-    // Create config directory and config file for CLIProxyAPI
+    // Pre-flight: verify the port is actually bindable before spawning.
+    // On Windows, Docker Desktop / WSL2 can leave `netsh portproxy` rules that hold
+    // 127.0.0.1:<port> via svchost even when no real service is behind them.
+    // A TcpListener bind attempt is the most reliable way to detect this.
+    {
+        use std::net::TcpListener;
+        if let Err(e) = TcpListener::bind(format!("127.0.0.1:{}", port)) {
+            let hint = if cfg!(windows) {
+                format!(
+                    "\n\nHint: Port {} is held by another process (possibly Docker Desktop or WSL2 portproxy).\n\
+                     • Go to Settings → General and change the port to a free one (e.g. 8318).\n\
+                     • Or run as Administrator and execute:\n\
+                     \u{0020} netsh interface portproxy delete v4tov4 listenport={} listenaddress=127.0.0.1",
+                    port, port
+                )
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "Port {} is already in use and could not be released: {}{}",
+                port, e, hint
+            ));
+        }
+        // Bind succeeded — drop the listener immediately so the real proxy can take the port.
+    }
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("proxypal");
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+
+    // Compute the absolute auth-dir path (credential storage for OAuth tokens).
+    // We expand it here so the Go binary receives an absolute path — on Windows `~` is not
+    // expanded automatically, causing credentials to be stored in a literal `~` directory.
+    let auth_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".cli-proxy-api");
+    std::fs::create_dir_all(&auth_dir).ok(); // Best-effort: create if missing
     
     let proxy_config_path = config_dir.join("proxy-config.yaml");
 
     // Build YAML config and append user customizations
-    let proxy_config = build_proxy_config_yaml(&config, &config_dir)?;
+    let proxy_config = build_proxy_config_yaml(&config, &config_dir, &auth_dir)?;
     std::fs::write(&proxy_config_path, proxy_config).map_err(|e| e.to_string())?;
 
     // Spawn the sidecar process with WRITABLE_PATH set to app config dir
@@ -597,6 +647,10 @@ pub async fn start_proxy(
         *process = Some(child);
     }
 
+    // Shared flag: set to true if the process terminates before we finish health-checking
+    let early_exit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let early_exit_watcher = early_exit.clone();
+
     // Listen for stdout/stderr in a separate task (for logging only)
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -614,6 +668,8 @@ pub async fn start_proxy(
                 }
                 CommandEvent::Terminated(payload) => {
                     println!("[CLIProxyAPI] Process terminated: {:?}", payload);
+                    // Signal early exit so the health-check loop knows not to mark running=true
+                    early_exit_watcher.store(true, Ordering::SeqCst);
                     // Update status when process dies unexpectedly
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         let mut status = state.proxy_status.lock().unwrap();
@@ -635,6 +691,25 @@ pub async fn start_proxy(
     for attempt in 0..25 {
         // 25 attempts × 200ms = 5s max
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // If the process already exited, abort immediately — no point waiting
+        if early_exit.load(Ordering::SeqCst) {
+            eprintln!("[ProxyPal] Proxy process exited early (port conflict or crash). Aborting start.");
+            let hint = if cfg!(windows) {
+                format!(
+                    " Port {} may still be in use.\n\
+                     Go to Settings → General and change the port, or restart your machine.",
+                    port
+                )
+            } else {
+                format!(" Port {} may still be in use.", port)
+            };
+            return Err(format!(
+                "Proxy failed to start — the process exited immediately.{}",
+                hint
+            ));
+        }
+
         match client
             .get(&health_url)
             .header("X-Management-Key", &get_management_key())

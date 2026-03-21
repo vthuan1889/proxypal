@@ -126,10 +126,17 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Use dedicated tray icon (22x22 @1x, 44x44 @2x for retina)
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon@2x.png"))
         .expect("Failed to load tray icon");
-    
-    let _tray = TrayIconBuilder::new()
-        .icon(tray_icon)
-        .icon_as_template(true)
+
+    // icon_as_template is macOS-only (renders icon as template image for dark/light mode).
+    // On Windows/Linux the concept doesn't exist — calling it causes a transparent/invisible tray icon.
+    #[allow(unused_mut)]
+    let mut tray_builder = TrayIconBuilder::new()
+        .icon(tray_icon);
+    #[cfg(target_os = "macos")]
+    {
+        tray_builder = tray_builder.icon_as_template(true);
+    }
+    let _tray = tray_builder
         .menu(&menu)
         .show_menu_on_left_click(false)
         .tooltip("ProxyPal - Proxy stopped")
@@ -265,6 +272,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Handle deep links when app is already running
             let urls: Vec<url::Url> = args

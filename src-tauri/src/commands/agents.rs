@@ -5,9 +5,23 @@
 
 use crate::state::AppState;
 use crate::types::{AgentStatus, AvailableModel, DetectedTool};
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use tauri::State;
+
+/// Generate a shell environment variable export line using platform-appropriate syntax.
+///
+/// - **Windows (PowerShell)**: `$env:KEY = "value"`
+/// - **Unix (bash/zsh/fish)**: `export KEY="value"`
+fn env_export_line(key: &str, value: &str) -> String {
+    #[cfg(target_os = "windows")]
+    return format!("$env:{} = \"{}\"", key, value);
+    #[cfg(not(target_os = "windows"))]
+    return format!("export {}=\"{}\"", key, value);
+}
+
+/// Generate a commented-out environment variable line (platform-appropriate).
+fn env_export_line_commented(key: &str, value: &str) -> String {
+    format!("# {}", env_export_line(key, value))
+}
 
 // Detect installed CLI agents
 #[tauri::command]
@@ -208,22 +222,34 @@ fn which_exists(cmd: &str) -> bool {
             let local_app_data_path = std::path::PathBuf::from(local_app_data);
             paths.push(local_app_data_path.join("npm"));
             paths.push(local_app_data_path.join("scoop/shims"));
+            // WinGet installs packages under AppData\Local\Microsoft\WinGet\Packages
+            // Each package may have a nested `bin/` directory.
+            let winget_packages = local_app_data_path.join("Microsoft/WinGet/Packages");
+            if winget_packages.exists() {
+                if let Ok(entries) = std::fs::read_dir(&winget_packages) {
+                    for entry in entries.flatten() {
+                        // WinGet package dirs typically contain the binary directly or a `bin/` subdir
+                        let pkg_path = entry.path();
+                        let pkg_bin = pkg_path.join("bin");
+                        if pkg_bin.exists() {
+                            paths.push(pkg_bin);
+                        } else if pkg_path.is_dir() {
+                            paths.push(pkg_path);
+                        }
+                    }
+                }
+            }
+            // WinGet also installs some tools into AppData\Local\Programs
+            paths.push(local_app_data_path.join("Programs"));
         }
         if let Some(program_files) = std::env::var_os("PROGRAMFILES") {
             paths.push(std::path::PathBuf::from(program_files).join("Git\\cmd"));
         }
 
-        // Windows detecting WSL-installed binaries
-        // Only search WSL paths if WSL is actually installed and available
-        // Check by seeing if wsl.exe exists and can be executed
-        let mut wsl_cmd = std::process::Command::new("wsl");
-        wsl_cmd.arg("--status");
-        #[cfg(target_os = "windows")]
-        wsl_cmd.creation_flags(CREATE_NO_WINDOW);
-        let wsl_available = wsl_cmd
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        // Windows: detect WSL-installed binaries via UNC paths (\\wsl.localhost\<distro>\...).
+        // PERF: Use a fast file-existence check for wsl.exe instead of spawning `wsl --status`,
+        // which can take 1-2 seconds when WSL is not installed or initialising.
+        let wsl_available = std::path::Path::new(r"C:\Windows\System32\wsl.exe").exists();
 
         if wsl_available {
             // WSL paths accessible via \\wsl.localhost\<distro>\home\<user> or \\wsl$\<distro>\home\<user>
@@ -391,24 +417,33 @@ wire_api = "responses"
         }
 
         "gemini-cli" => {
-            // Generate shell config for Gemini CLI
+            // Generate shell config for Gemini CLI using platform-appropriate syntax.
+            // On Windows: $env:VAR = "value" (PowerShell)
+            // On Unix:    export VAR="value"
             let shell_config = format!(
-                r#"# ProxyPal - Gemini CLI Configuration
-# Option 1: OAuth mode (local only)
-export CODE_ASSIST_ENDPOINT="{}"
-
-# Option 2: API Key mode (works with any IP/domain)
-# export GOOGLE_GEMINI_BASE_URL="{}"
-# export GEMINI_API_KEY="proxypal-local"
-"#,
-                endpoint, endpoint
+                "# ProxyPal - Gemini CLI Configuration\n\
+                 # Option 1: OAuth mode (local only)\n\
+                 {code_assist}\n\
+                 \n\
+                 # Option 2: API Key mode (works with any IP/domain)\n\
+                 {gemini_url}\n\
+                 {gemini_key}\n",
+                code_assist = env_export_line("CODE_ASSIST_ENDPOINT", &endpoint),
+                gemini_url = env_export_line_commented("GOOGLE_GEMINI_BASE_URL", &endpoint),
+                gemini_key = env_export_line_commented("GEMINI_API_KEY", "proxypal-local"),
             );
+
+            let profile_hint = if cfg!(target_os = "windows") {
+                "Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1"
+            } else {
+                "~/.bashrc, ~/.zshrc, or shell config file"
+            };
 
             Ok(serde_json::json!({
                 "success": true,
                 "configType": "env",
                 "shellConfig": shell_config,
-                "instructions": "Add the above to your ~/.bashrc, ~/.zshrc, or shell config file, then restart your terminal."
+                "instructions": format!("Add the above to your {} then restart your terminal.", profile_hint)
             }))
         }
 
@@ -809,16 +844,17 @@ fn configure_amp_cli_agent(
     let settings_content = serde_json::to_string_pretty(&final_config).map_err(|e| e.to_string())?;
     std::fs::write(&config_path, &settings_content).map_err(|e| e.to_string())?;
 
-    // Also provide env var option and API key instructions
+    // Also provide env var option and API key instructions.
+    // Use platform-appropriate syntax (PowerShell on Windows, export on Unix).
     let shell_config = format!(
-        r#"# ProxyPal - Amp CLI Configuration (alternative to settings.json)
-export AMP_URL="{}"
-export AMP_API_KEY="proxypal-local"
-
-# For Amp cloud features, get your API key from https://ampcode.com/settings
-# and add it to ProxyPal Settings > Amp CLI Integration > Amp API Key
-"#,
-        amp_endpoint
+        "# ProxyPal - Amp CLI Configuration (alternative to settings.json)\n\
+         {amp_url}\n\
+         {amp_key}\n\
+         \n\
+         # For Amp cloud features, get your API key from https://ampcode.com/settings\n\
+         # and add it to ProxyPal Settings > Amp CLI Integration > Amp API Key\n",
+        amp_url = env_export_line("AMP_URL", &amp_endpoint),
+        amp_key = env_export_line("AMP_API_KEY", "proxypal-local"),
     );
 
     Ok(serde_json::json!({
@@ -1041,26 +1077,40 @@ fn configure_opencode_agent(
 pub fn get_shell_profile_path() -> Result<String, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
 
-    // Check for common shell config files
-    let shell = std::env::var("SHELL").unwrap_or_default();
+    // On Windows we target the PowerShell profile — the standard location for persistent
+    // environment variables set via `$env:VAR = "value"`.
+    // The directory (`Documents\PowerShell`) may not exist yet; `append_to_shell_profile`
+    // will create it automatically.
+    #[cfg(target_os = "windows")]
+    {
+        let ps_profile = home
+            .join("Documents")
+            .join("PowerShell")
+            .join("Microsoft.PowerShell_profile.ps1");
+        return Ok(ps_profile.to_string_lossy().to_string());
+    }
 
-    let profile_path = if shell.contains("zsh") {
-        home.join(".zshrc")
-    } else if shell.contains("bash") {
-        // Prefer .bashrc on Linux, .bash_profile on macOS
-        #[cfg(target_os = "macos")]
-        let path = home.join(".bash_profile");
-        #[cfg(not(target_os = "macos"))]
-        let path = home.join(".bashrc");
-        path
-    } else if shell.contains("fish") {
-        home.join(".config/fish/config.fish")
-    } else {
-        // Default to .profile
-        home.join(".profile")
-    };
-
-    Ok(profile_path.to_string_lossy().to_string())
+    // Unix: detect shell from $SHELL env var and choose the appropriate rc file.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        let profile_path = if shell.contains("zsh") {
+            home.join(".zshrc")
+        } else if shell.contains("bash") {
+            // Prefer .bash_profile on macOS, .bashrc on Linux
+            #[cfg(target_os = "macos")]
+            let path = home.join(".bash_profile");
+            #[cfg(not(target_os = "macos"))]
+            let path = home.join(".bashrc");
+            path
+        } else if shell.contains("fish") {
+            home.join(".config/fish/config.fish")
+        } else {
+            // Default to .profile for other shells (sh, dash, etc.)
+            home.join(".profile")
+        };
+        Ok(profile_path.to_string_lossy().to_string())
+    }
 }
 
 // Append environment config to shell profile
@@ -1068,6 +1118,15 @@ pub fn get_shell_profile_path() -> Result<String, String> {
 pub fn append_to_shell_profile(content: String) -> Result<String, String> {
     let profile_path = get_shell_profile_path()?;
     let path = std::path::Path::new(&profile_path);
+
+    // Create parent directories if they don't exist.
+    // This is required on Windows where `Documents\PowerShell` may not exist
+    // if the user has never opened a PowerShell session.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!("Failed to create profile directory '{}': {}", parent.display(), e)
+        })?;
+    }
 
     // Read existing content
     let existing = std::fs::read_to_string(path).unwrap_or_default();
@@ -1255,10 +1314,6 @@ models:
     Ok(config_path.to_string_lossy().to_string())
 }
 
-// Windows CREATE_NO_WINDOW flag (used by which_exists on Windows)
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 // Get setup instructions for a specific tool
 #[tauri::command]
 pub fn get_tool_setup_info(tool_id: String, state: State<AppState>) -> Result<serde_json::Value, String> {
@@ -1350,4 +1405,50 @@ pub fn get_tool_setup_info(tool_id: String, state: State<AppState>) -> Result<se
     };
     
     Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_shell_profile_path_returns_nonempty_string() {
+        let result = get_shell_profile_path();
+        assert!(result.is_ok(), "get_shell_profile_path should not fail");
+        let path = result.unwrap();
+        assert!(!path.is_empty(), "shell profile path must not be empty");
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn get_shell_profile_path_returns_powershell_profile_on_windows() {
+        let path = get_shell_profile_path().unwrap();
+        assert!(
+            path.contains("PowerShell"),
+            "Windows shell profile should point to PowerShell: got {}",
+            path
+        );
+        assert!(
+            path.ends_with("Microsoft.PowerShell_profile.ps1"),
+            "Windows shell profile should end with Microsoft.PowerShell_profile.ps1: got {}",
+            path
+        );
+    }
+
+    #[test]
+    fn env_export_line_generates_correct_syntax() {
+        let line = env_export_line("FOO", "bar");
+        #[cfg(target_os = "windows")]
+        assert_eq!(line, "$env:FOO = \"bar\"", "Windows should use PowerShell syntax");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(line, "export FOO=\"bar\"", "Unix should use export syntax");
+    }
+
+    #[test]
+    fn env_export_line_commented_adds_hash_prefix() {
+        let line = env_export_line_commented("BAZ", "qux");
+        assert!(line.starts_with('#'), "Commented line should start with '#'");
+        assert!(line.contains("BAZ"), "Commented line should contain the key");
+        assert!(line.contains("qux"), "Commented line should contain the value");
+    }
 }

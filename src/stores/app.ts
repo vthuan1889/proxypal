@@ -220,8 +220,6 @@ function createAppStore() {
         console.error("Failed to sync usage on startup:", error);
       }
 
-      setIsInitialized(true);
-
       // Cleanup on unmount
       onCleanup(() => {
         unlistenProxy();
@@ -232,6 +230,8 @@ function createAppStore() {
     } catch (error) {
       console.error("Failed to initialize app:", error);
     } finally {
+      // Always mark initialized so the loading screen clears, even on error
+      setIsInitialized(true);
       setIsLoading(false);
     }
   };

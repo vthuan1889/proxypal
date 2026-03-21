@@ -60,7 +60,8 @@ pub async fn get_auth_files(state: State<'_, AppState>) -> Result<Vec<AuthFile>,
         }
     }
     
-    // 2. Scan for disabled files (.json.disabled) in auth directory
+    // 2. Scan auth directory on the filesystem for any files the Management API may have missed
+    // (e.g. proxy not running, or disabled files never returned by the API).
     let auth_dir = dirs::home_dir()
         .ok_or("Could not find home directory")?
         .join(".cli-proxy-api");
@@ -69,49 +70,111 @@ pub async fn get_auth_files(state: State<'_, AppState>) -> Result<Vec<AuthFile>,
         if let Ok(entries) = std::fs::read_dir(&auth_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.ends_with(".json.disabled") {
-                        // This is a disabled auth file
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                                // Try to extract provider/email for metadata
-                                let provider = json.get("provider")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                    
-                                let dummy_id = name.strip_suffix(".json.disabled").unwrap_or(name).to_string();
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+
+                // ---- Active auth files (.json) not already returned by Management API ----
+                if name.ends_with(".json") && !name.ends_with(".json.disabled") {
+                    // Check if Management API already returned this file (by name)
+                    let already_listed = files.iter().any(|f| f.name == name || f.id == name);
+                    if !already_listed {
+                        // Infer provider from filename prefix
+                        let provider = if name.starts_with("claude-") || name.starts_with("anthropic-") {
+                            "claude"
+                        } else if name.starts_with("codex-") {
+                            "openai"
+                        } else if name.starts_with("gemini-") {
+                            "gemini"
+                        } else if name.starts_with("qwen-") {
+                            "qwen"
+                        } else if name.starts_with("iflow-") {
+                            "iflow"
+                        } else if name.starts_with("vertex-") {
+                            "vertex"
+                        } else if name.starts_with("kiro-") {
+                            "kiro"
+                        } else if name.starts_with("antigravity-") {
+                            "antigravity"
+                        } else if name.starts_with("kimi-") {
+                            "kimi"
+                        } else {
+                            "unknown"
+                        };
+
+                        let stem = name.strip_suffix(".json").unwrap_or(&name).to_string();
+                        files.push(AuthFile {
+                            id: stem.clone(),
+                            name: name.clone(),
+                            provider: provider.to_string(),
+                            status: "active".to_string(),
+                            disabled: false,
+                            unavailable: false,
+                            runtime_only: false,
+                            source: Some("file".to_string()),
+                            path: Some(path.to_string_lossy().to_string()),
+                            size: Some(entry.metadata().map(|m| m.len()).unwrap_or(0)),
+                            modtime: Some(entry.metadata().ok()
+                                .and_then(|m| m.modified().ok())
+                                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+                                .unwrap_or_default()),
+                            email: None,
+                            account_type: None,
+                            account: None,
+                            label: None,
+                            status_message: None,
+                            created_at: None,
+                            updated_at: None,
+                            last_refresh: None,
+                            success_count: None,
+                            failure_count: None,
+                        });
+                    }
+                }
+
+                // ---- Disabled auth files (.json.disabled) ----
+                if name.ends_with(".json.disabled") {
+                    // This is a disabled auth file
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            // Try to extract provider/email for metadata
+                            let provider = json.get("provider")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
                                 
-                                // Create AuthFile entry for this disabled file
-                                let disabled_file = AuthFile {
-                                    id: dummy_id.clone(),
-                                    name: dummy_id,
-                                    provider,
-                                    status: "disabled".to_string(),
-                                    disabled: true,
-                                    unavailable: false,
-                                    runtime_only: false,
-                                    source: Some("file".to_string()),
-                                    path: Some(path.to_string_lossy().to_string()),
-                                    size: Some(entry.metadata().map(|m| m.len()).unwrap_or(0)),
-                                    modtime: Some(entry.metadata().ok()
-                                        .and_then(|m| m.modified().ok())
-                                        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
-                                        .unwrap_or_default()),
-                                    email: None, // Could parse from content if standard format
-                                    account_type: None,
-                                    account: None,
-                                    created_at: None,
-                                    updated_at: None,
-                                    last_refresh: None,
-                                    success_count: None,
-                                    failure_count: None,
-                                    label: None,
-                                    status_message: None,
-                                };
-                                
-                                files.push(disabled_file);
-                            }
+                            let dummy_id = name.strip_suffix(".json.disabled").unwrap_or(&name).to_string();
+                            
+                            // Create AuthFile entry for this disabled file
+                            let disabled_file = AuthFile {
+                                id: dummy_id.clone(),
+                                name: dummy_id,
+                                provider,
+                                status: "disabled".to_string(),
+                                disabled: true,
+                                unavailable: false,
+                                runtime_only: false,
+                                source: Some("file".to_string()),
+                                path: Some(path.to_string_lossy().to_string()),
+                                size: Some(entry.metadata().map(|m| m.len()).unwrap_or(0)),
+                                modtime: Some(entry.metadata().ok()
+                                    .and_then(|m| m.modified().ok())
+                                    .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+                                    .unwrap_or_default()),
+                                email: None,
+                                account_type: None,
+                                account: None,
+                                created_at: None,
+                                updated_at: None,
+                                last_refresh: None,
+                                success_count: None,
+                                failure_count: None,
+                                label: None,
+                                status_message: None,
+                            };
+                            
+                            files.push(disabled_file);
                         }
                     }
                 }
