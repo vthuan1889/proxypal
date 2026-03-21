@@ -5,6 +5,7 @@
 
 use crate::state::AppState;
 use crate::types::{AuthStatus, OAuthState};
+use crate::utils::provider_filename_prefixes;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 use tauri_plugin_opener::OpenerExt;
@@ -500,21 +501,9 @@ pub async fn disconnect_provider(
             for entry in entries.flatten() {
                 let filename = entry.file_name().to_string_lossy().to_lowercase();
 
-                // Match credential files by provider prefix
-                let should_delete = match provider.as_str() {
-                    "claude" => {
-                        filename.starts_with("claude-") || filename.starts_with("anthropic-")
-                    }
-                    "openai" => filename.starts_with("codex-"),
-                    "gemini" => filename.starts_with("gemini-"),
-                    "qwen" => filename.starts_with("qwen-"),
-                    "iflow" => filename.starts_with("iflow-"),
-                    "vertex" => filename.starts_with("vertex-"),
-                    "kiro" => filename.starts_with("kiro-"),
-                    "antigravity" => filename.starts_with("antigravity-"),
-                    "kimi" => filename.starts_with("kimi-"),
-                    _ => false,
-                };
+                // Match credential files by provider prefix (single source of truth in utils.rs)
+                let prefixes = provider_filename_prefixes(provider.as_str());
+                let should_delete = prefixes.iter().any(|p| filename.starts_with(p));
 
                 if should_delete && filename.ends_with(".json") {
                     if let Err(e) = std::fs::remove_file(entry.path()) {

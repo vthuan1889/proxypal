@@ -82,6 +82,59 @@ pub fn detect_provider_from_model(model: &str) -> String {
     "unknown".to_string()
 }
 
+/// Infer provider name from an auth credential filename.
+///
+/// Auth files follow the pattern `<provider-prefix>-<account>.json` (or `.json.disabled`).
+/// Returns the canonical provider string, or `"unknown"` if no prefix matches.
+///
+/// This is the single source of truth for filename→provider mapping, used by both
+/// `auth_files.rs` (filesystem scan) and `auth.rs` (credential deletion).
+pub fn detect_provider_from_filename(name: &str) -> &'static str {
+    /// (prefix, provider) pairs — order doesn't matter since prefixes are disjoint.
+    const MAPPINGS: &[(&str, &str)] = &[
+        ("claude-", "claude"),
+        ("anthropic-", "claude"),
+        ("codex-", "openai"),
+        ("gemini-", "gemini"),
+        ("qwen-", "qwen"),
+        ("iflow-", "iflow"),
+        ("vertex-", "vertex"),
+        ("kiro-", "kiro"),
+        ("antigravity-", "antigravity"),
+        ("kimi-", "kimi"),
+        ("github-", "github"),
+        ("aws-", "AWS"),
+    ];
+
+    for &(prefix, provider) in MAPPINGS {
+        if name.starts_with(prefix) {
+            return provider;
+        }
+    }
+    "unknown"
+}
+
+/// Return the filename prefixes associated with a canonical provider name.
+///
+/// Used by `auth.rs` to match credential files for deletion.
+/// Returns an empty slice for unknown providers.
+pub fn provider_filename_prefixes(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "claude" => &["claude-", "anthropic-"],
+        "openai" => &["codex-"],
+        "gemini" => &["gemini-"],
+        "qwen" => &["qwen-"],
+        "iflow" => &["iflow-"],
+        "vertex" => &["vertex-"],
+        "kiro" => &["kiro-"],
+        "antigravity" => &["antigravity-"],
+        "kimi" => &["kimi-"],
+        "github" => &["github-"],
+        "AWS" => &["aws-"],
+        _ => &[],
+    }
+}
+
 /// Extract provider from Amp-style API path
 /// e.g., "/api/provider/anthropic/v1/messages" -> "claude"
 pub fn detect_provider_from_path(path: &str) -> Option<String> {
@@ -135,4 +188,56 @@ pub fn extract_model_from_path(path: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_provider_from_filename_known_prefixes() {
+        assert_eq!(detect_provider_from_filename("claude-user@example.json"), "claude");
+        assert_eq!(detect_provider_from_filename("anthropic-foo.json"), "claude");
+        assert_eq!(detect_provider_from_filename("codex-bar.json"), "openai");
+        assert_eq!(detect_provider_from_filename("gemini-baz.json"), "gemini");
+        assert_eq!(detect_provider_from_filename("qwen-test.json"), "qwen");
+        assert_eq!(detect_provider_from_filename("iflow-acct.json"), "iflow");
+        assert_eq!(detect_provider_from_filename("vertex-proj.json"), "vertex");
+        assert_eq!(detect_provider_from_filename("kiro-dev.json"), "kiro");
+        assert_eq!(detect_provider_from_filename("antigravity-x.json"), "antigravity");
+        assert_eq!(detect_provider_from_filename("kimi-user.json"), "kimi");
+        assert_eq!(detect_provider_from_filename("github-token.json"), "github");
+        assert_eq!(detect_provider_from_filename("aws-creds.json"), "AWS");
+    }
+
+    #[test]
+    fn detect_provider_from_filename_unknown() {
+        assert_eq!(detect_provider_from_filename("random-file.json"), "unknown");
+        assert_eq!(detect_provider_from_filename("config.json"), "unknown");
+    }
+
+    #[test]
+    fn provider_filename_prefixes_roundtrip() {
+        // Every known provider should have at least one prefix
+        for provider in &["claude", "openai", "gemini", "qwen", "iflow", "vertex", "kiro", "antigravity", "kimi"] {
+            let prefixes = provider_filename_prefixes(provider);
+            assert!(!prefixes.is_empty(), "provider '{}' should have prefixes", provider);
+            // Each prefix should map back to the same provider
+            for prefix in prefixes {
+                let filename = format!("{}test.json", prefix);
+                assert_eq!(
+                    detect_provider_from_filename(&filename),
+                    *provider,
+                    "prefix '{}' should map to provider '{}'",
+                    prefix,
+                    provider
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_filename_prefixes_unknown_returns_empty() {
+        assert!(provider_filename_prefixes("nonexistent").is_empty());
+    }
 }

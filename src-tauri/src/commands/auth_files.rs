@@ -2,6 +2,7 @@
 
 use crate::state::AppState;
 use crate::types::{self, AuthFile};
+use crate::utils::detect_provider_from_filename;
 use crate::{build_management_client, get_management_key, get_management_url};
 use tauri::State;
 
@@ -80,28 +81,7 @@ pub async fn get_auth_files(state: State<'_, AppState>) -> Result<Vec<AuthFile>,
                     // Check if Management API already returned this file (by name)
                     let already_listed = files.iter().any(|f| f.name == name || f.id == name);
                     if !already_listed {
-                        // Infer provider from filename prefix
-                        let provider = if name.starts_with("claude-") || name.starts_with("anthropic-") {
-                            "claude"
-                        } else if name.starts_with("codex-") {
-                            "openai"
-                        } else if name.starts_with("gemini-") {
-                            "gemini"
-                        } else if name.starts_with("qwen-") {
-                            "qwen"
-                        } else if name.starts_with("iflow-") {
-                            "iflow"
-                        } else if name.starts_with("vertex-") {
-                            "vertex"
-                        } else if name.starts_with("kiro-") {
-                            "kiro"
-                        } else if name.starts_with("antigravity-") {
-                            "antigravity"
-                        } else if name.starts_with("kimi-") {
-                            "kimi"
-                        } else {
-                            "unknown"
-                        };
+                        let provider = detect_provider_from_filename(&name);
 
                         let stem = name.strip_suffix(".json").unwrap_or(&name).to_string();
                         files.push(AuthFile {

@@ -582,17 +582,32 @@ pub async fn start_proxy(
         let _ = cmd2.output();
     }
 
-    // Longer delay to ensure port is fully released
-    // On Windows, CloseWait TCP connections from the previous process can linger for 2-3s
+    // Delay to ensure port is fully released.
+    // On Windows, TIME_WAIT / CloseWait TCP connections from the previous process can
+    // linger for 2-3s, so we need a longer delay. On Unix, 500ms is sufficient.
+    #[cfg(target_os = "windows")]
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+    #[cfg(not(target_os = "windows"))]
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Pre-flight: verify the port is actually bindable before spawning.
     // On Windows, Docker Desktop / WSL2 can leave `netsh portproxy` rules that hold
     // 127.0.0.1:<port> via svchost even when no real service is behind them.
-    // A TcpListener bind attempt is the most reliable way to detect this.
+    // We retry a few times with a short sleep to reduce the TOCTOU window between the
+    // previous process releasing the port and us binding it.
     {
         use std::net::TcpListener;
-        if let Err(e) = TcpListener::bind(format!("127.0.0.1:{}", port)) {
+        let mut bind_ok = false;
+        for attempt in 0..3 {
+            if TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok() {
+                bind_ok = true;
+                break;
+            }
+            if attempt < 2 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            }
+        }
+        if !bind_ok {
             let hint = if cfg!(windows) {
                 format!(
                     "\n\nHint: Port {} is held by another process (possibly Docker Desktop or WSL2 portproxy).\n\
@@ -605,8 +620,8 @@ pub async fn start_proxy(
                 String::new()
             };
             return Err(format!(
-                "Port {} is already in use and could not be released: {}{}",
-                port, e, hint
+                "Port {} is already in use and could not be released{}",
+                port, hint
             ));
         }
         // Bind succeeded — drop the listener immediately so the real proxy can take the port.
