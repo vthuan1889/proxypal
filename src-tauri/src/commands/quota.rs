@@ -726,9 +726,15 @@ pub async fn fetch_kiro_quota() -> Result<Vec<crate::types::quota::KiroQuotaResu
     use std::path::PathBuf;
     use regex::Regex;
 
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+    #[cfg(target_os = "windows")]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     // Find kiro-cli binary - GUI apps don't inherit user's shell PATH
     // So we check common installation locations
     fn find_kiro_cli() -> Option<PathBuf> {
+        #[cfg(not(target_os = "windows"))]
         let candidates: Vec<PathBuf> = vec![
             // User's local bin (most common for kiro-cli)
             dirs::home_dir().map(|h| h.join(".local/bin/kiro-cli")),
@@ -739,6 +745,17 @@ pub async fn fetch_kiro_quota() -> Result<Vec<crate::types::quota::KiroQuotaResu
             Some(PathBuf::from("/usr/bin/kiro-cli")),
         ].into_iter().flatten().collect();
 
+        #[cfg(target_os = "windows")]
+        let candidates: Vec<PathBuf> = vec![
+            // npm global install location
+            dirs::home_dir().map(|h| h.join("AppData/Roaming/npm/kiro-cli.cmd")),
+            dirs::home_dir().map(|h| h.join("AppData/Roaming/npm/kiro-cli")),
+            // Scoop
+            dirs::home_dir().map(|h| h.join("scoop/shims/kiro-cli.exe")),
+            // Program Files
+            Some(PathBuf::from("C:\\Program Files\\kiro-cli\\kiro-cli.exe")),
+        ].into_iter().flatten().collect();
+
         for path in candidates {
             if path.exists() {
                 return Some(path);
@@ -746,11 +763,34 @@ pub async fn fetch_kiro_quota() -> Result<Vec<crate::types::quota::KiroQuotaResu
         }
         
         // Fallback: try PATH (works if launched from terminal)
-        if let Ok(output) = Command::new("which").arg("kiro-cli").output() {
-            if output.status.success() {
-                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path_str.is_empty() {
-                    return Some(PathBuf::from(path_str));
+        // Use `which` on Unix, `where` on Windows to avoid triggering WSL installation prompt
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(output) = Command::new("which").arg("kiro-cli").output() {
+                if output.status.success() {
+                    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !path_str.is_empty() {
+                        return Some(PathBuf::from(path_str));
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = Command::new("where");
+            cmd.arg("kiro-cli");
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            if let Ok(output) = cmd.output() {
+                if output.status.success() {
+                    let path_str = String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !path_str.is_empty() {
+                        return Some(PathBuf::from(path_str));
+                    }
                 }
             }
         }
@@ -779,9 +819,11 @@ pub async fn fetch_kiro_quota() -> Result<Vec<crate::types::quota::KiroQuotaResu
     };
 
     // Run kiro-cli chat --no-interactive "/usage"
-    let output = Command::new(&kiro_cli_path)
-        .args(&["chat", "--no-interactive", "/usage"])
-        .output();
+    let mut cmd = Command::new(&kiro_cli_path);
+    cmd.args(&["chat", "--no-interactive", "/usage"]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let output = cmd.output();
 
     match output {
         Ok(out) if out.status.success() => {
